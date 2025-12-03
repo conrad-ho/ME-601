@@ -114,8 +114,8 @@ if nargin < 6 || isempty(yddot_d)
 end
 
 % Gains (tune me)
-Kp = diag([100, 100]);
-Kd = diag([50, 50]);
+Kp = diag([10, 10]);
+Kd = diag([5, 5]);
 
 % current output and derivative
 y = [ xr - d*cos(thetar); yr - d*sin(thetar) ];

@@ -17,8 +17,8 @@ function varargout = fb_lin_wrapper(x, t, params)
 % yd_dot = R*omega*[-sin(omega*t); cos(omega*t)];
 % yd_ddot = -R*omega^2*[cos(omega*t); sin(omega*t)];
 
-R = 1;
-omega = 0.1;
+R = 0.25;
+omega = .275;
 
 % Get initial hitch point
 xr = x(1); yr = x(2); thetar = x(3);

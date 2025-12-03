@@ -29,13 +29,15 @@ yt0 = r_r_h(2) - (params.Lt/2)*sin(thetar0);
 params.x0(7:9)   = [xt0; yt0; thetar0];  % initial trailer pose
 params.x0(10:12) = [0;0;0];              % trailer initially at rest
 
-% Controller handle
-controller = @(x,t) user_force_input(x,t);
+% Use the feedback-linearizing controller via a wrapper that matches the simulator interface.
+% controller = @(x,t) user_force_input(x,t);
+controller = @(x,t) fb_lin_wrapper(x, t, params);
+
 
 % Run simulation
 simulate_planar_towing_full_dynamics(controller, tspan, params);
 
-% Force/Torque Input Function
+% Force/Torque Input Function, not being used
 function [F, tau] = user_force_input(~,t)
     % test: constant thrust, small steering pulse
     F = 30;   % constant forward force
