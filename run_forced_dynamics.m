@@ -32,7 +32,7 @@ params.x0(10:12) = [0;0;0];              % trailer initially at rest
 % Use the feedback-linearizing controller via a wrapper that matches the simulator interface.
 % controller = @(x,t) user_force_input(x,t);
 controller = @(x,t) fb_lin_wrapper(x, t, params);
-
+%controller = @(x,t) qp_debug_wrapper(x, t, params);
 
 % Run simulation
 simulate_planar_towing_full_dynamics(controller, tspan, params);
