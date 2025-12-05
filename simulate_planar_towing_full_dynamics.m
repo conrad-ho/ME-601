@@ -88,18 +88,29 @@ figure('Color','w'); hold on; grid on; axis equal;
 xlabel('X (m)'); ylabel('Y (m)');
 title('Planar Robot–Trailer Dynamics (Rigid Hitch)');
 xlim([-2 12]); ylim([-4 4]);
-
-path_trace = plot(NaN,NaN,'k-','LineWidth',1.2,'HandleVisibility','off');
+% path traces: robot (solid), trailer (dashed)
+path_robot   = plot(NaN,NaN,'k-','LineWidth',1.2,'DisplayName','robot');
+path_trailer = plot(NaN,NaN,'k--','LineWidth',1.2,'DisplayName','trailer');
+% body patches
 robot_patch   = patch(NaN,NaN,'r','FaceAlpha',0.4,'EdgeColor','none');
 trailer_patch = patch(NaN,NaN,'b','FaceAlpha',0.4,'EdgeColor','none');
 
-traj_x=[]; traj_y=[];
+legend('Location','best');
+idx_vec = 1:5:length(t);
+Nsteps = numel(idx_vec);
+traj_x_r = NaN(1, Nsteps);traj_y_r = NaN(1, Nsteps);
+traj_x_t = NaN(1, Nsteps);traj_y_t = NaN(1, Nsteps);
+k=1;
 for i = 1:5:length(t)
+    k = k + 1;  
     xr = X(i,1); yr = X(i,2); thetar = X(i,3);
     xt = X(i,7); yt = X(i,8); thetat = X(i,9);
 
-    traj_x(end+1)=xr; traj_y(end+1)=yr;
-    set(path_trace,'XData',traj_x,'YData',traj_y);
+    traj_x_r(k) = xr;traj_y_r(k) = yr;
+    traj_x_t(k) = xt;traj_y_t(k) = yt;
+    %update traj
+    set(path_robot,  'XData', traj_x_r(1:k), 'YData', traj_y_r(1:k));
+    set(path_trailer,'XData', traj_x_t(1:k), 'YData', traj_y_t(1:k));
 
     set(robot_patch,'XData',rect_x(xr,params.Wr,params.Lr,thetar), ...
                     'YData',rect_y(yr,params.Wr,params.Lr,thetar));
