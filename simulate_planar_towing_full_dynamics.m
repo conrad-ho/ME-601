@@ -46,6 +46,42 @@ for k = 1:length(t)
     hitch_len = norm(r_rh - r_th);
     fprintf('t=%.2f, hitch=%.4f\n', t(k), hitch_len);
 end
+% =========================================================
+% 2) Build log: t, X, hitch output y, and control input u
+% =========================================================
+N = length(t);
+log = struct();
+log.t  = t;        % [N x 1] time vector
+log.X  = X;        % [N x 12] full state trajectory
+log.yd = zeros(N,2);
+log.y  = zeros(N,2);   % actual hitch position (x, y)
+log.u  = zeros(N,2);   % control inputs [F_drive, tau_r]
+ref_state.mode = 'local_circle'; %% Notice: change this to draw different desire path
+ref_state.initialized = false;
+for k = 1:N
+    % state and time at step k
+    xk = X(k,:).';      % 12x1 state at time step k
+    tk = t(k);
+
+    % current hitch position (definition consistent with the controller)
+    xr = xk(1); 
+    yr = xk(2); 
+    thetar = xk(3);
+    d  = params.d;
+    yk = [xr - d*cos(thetar);
+          yr - d*sin(thetar)];
+    log.y(k,:) = yk.';  % store actual hitch position
+
+    % current control input (replay using the same controller_handle)
+    [F_drive, tau_r] = controller_handle(xk, tk);
+    log.u(k,:) = [F_drive, tau_r];
+
+    % desired hitch trajectory evaluated at current time,
+    % using actual hitch position as initial condition for hitch_ref
+    [yd_k, ~, ~, ref_state] = hitch_ref(tk, yk, ref_state);
+    log.yd(k,:) = yd_k.';    % store desired hitch position
+end
+save('log.mat','log')
 
 % Visualization
 figure('Color','w'); hold on; grid on; axis equal;
