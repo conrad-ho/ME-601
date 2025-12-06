@@ -9,12 +9,13 @@ function [F_drive, tau_r] = qp_debug_wrapper(x, t, params)
     xr     = x(1);
     yr     = x(2);
     thetar = x(3);
-    v      = x(7:12);      % change this if dq is not located in 7:12
+   
 
     y = [xr - d*cos(thetar);
          yr - d*sin(thetar)];
 
     dyn       = towing_dynamics_mats(x, params);
+    v      = dyn.v;      % change this if dq is not located in 7:12
     J_y       = dyn.J_y;
     Jdot_y_v  = dyn.Jdot_y_v;
     ydot      = J_y * v;
@@ -36,7 +37,7 @@ function [F_drive, tau_r] = qp_debug_wrapper(x, t, params)
     % ======================================================
     %[F_drive, tau_r, qp_dbg] = task_space_qp_controller( ...
     %                        x, t, params, yd, ydot_d, yddot_ff);
-    [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj( ...
+    [F_drive, tau_r, qp_dbg] = task_space_qp_controller( ...
                           x, t, params, yd, ydot_d, yddot_ff);
     % unpack qp solution
     a_opt      = qp_dbg.a_opt;
