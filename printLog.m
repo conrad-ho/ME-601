@@ -1,33 +1,59 @@
-% printLog.m
-% -------------------------------------------------------------------------
-% Utility script to load a saved simulation log (log.mat) and visualize:
-%   1) Hitch reference (desired) path vs. actual hitch path in XY-plane
-%   2) Control inputs over time: drive force F_drive and yaw torque tau_r
-%
-% Expected structure inside log.mat:
-%   log.t    : [N x 1] time vector
-%   log.y    : [N x 2] actual hitch position [x_h, y_h]
-%   log.yd   : [N x 2] desired hitch position [x_h, y_h]
-%   log.u    : [N x 2] control inputs [F_drive, tau_r]
-%
-% Make sure that 'log.mat' is in the current MATLAB folder or on the path
-% before running this script.
-% -------------------------------------------------------------------------
+%   log    : struct with fields
+%              .t  [N x 1]
+%              .y  [N x 2]  actual trailer com position [x_t, y_t]
+%              .X  [N x 12] full state (can be used for hitch, etc.)
+%              .u  [N x 2]  control inputs [F_drive, tau_r]
+%   ref_to : struct with fields
+%              .p_hitch [2 x N] TO hitch reference path
+%              .p_tr    [2 x N] TO trailer reference path
+%   note: here y follows the trailer com, not the hitch
 
-% Load log from file
-loadinglog = load('log.mat');
-log        = loadinglog.log;
+
+
+% Load from file
+data = load('log.mat');
+
+if ~isfield(data,'log')
+    error('log.mat does not contain variable ''log''.');
+end
+if ~isfield(data,'ref_to')
+    error('log.mat does not contain variable ''ref_to''.');
+end
+
+log    = data.log;
+ref_to = data.ref_to;
+
+% transpose reference paths: 2xN -> N x 2
+p_hitch_ref = ref_to.p_hitch.';   % [N x 2]
+p_tr_ref    = ref_to.p_tr.';      % [N x 2]
 
 % =========================================================
-% 1) Hitch actual vs desired path
+% 1) trailer: TO reference path vs actual trailer com path
 % =========================================================
 figure('Color','w'); hold on; grid on; axis equal;
-plot(log.yd(:,1), log.yd(:,2), 'r--', 'LineWidth', 1.5);  % desired hitch path
-plot(log.y(:,1),  log.y(:,2),  'b-',  'LineWidth', 1.5);  % actual hitch path
-xlabel('x_h'); ylabel('y_h');
-legend('desired hitch','actual hitch','Location','Best');
-title('Hitch path: actual vs desired');
+plot(p_tr_ref(:,1), p_tr_ref(:,2), 'r--', 'LineWidth', 1.5);   % TO ref (trailer)
+plot(log.y(:,1),    log.y(:,2),    'b-',  'LineWidth', 1.5);   % actual trailer com
+xlabel('x_t');
+ylabel('y_t');
+legend('TO reference path (trailer)','actual trailer com','Location','Best');
+title('trailer com path: TO reference vs actual');
 
+%{
+% =========================================================
+% 1b) Trailer: TO reference path vs actual trailer path  (from log.X)
+% =========================================================
+if isfield(log,'X') && size(log.X,2) >= 8
+    xt = log.X(:,7);   % trailer x (根据你的状态定义 [xr,yr,thetar,vxr,vyr,wr,xt,yt,...])
+    yt = log.X(:,8);   % trailer y
+    figure('Color','w'); hold on; grid on; axis equal;
+    plot(p_tr_ref(:,1), p_tr_ref(:,2), 'r--', 'LineWidth', 1.5);   % TO ref (trailer)
+    plot(xt, yt, 'b-', 'LineWidth', 1.5);                          % actual trailer
+    xlabel('x_t');
+    ylabel('y_t');
+    legend('TO reference path (trailer)','actual trailer','Location','Best');
+    title('Trailer path: TO reference vs actual');
+end
+%}
 % =========================================================
 % 2) Control inputs over time
 % =========================================================

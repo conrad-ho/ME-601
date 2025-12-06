@@ -46,31 +46,38 @@ for k = 1:length(t)
     hitch_len = norm(r_rh - r_th);
     fprintf('t=%.2f, hitch=%.4f\n', t(k), hitch_len);
 end
-% =========================================================
-% 2) Build log: t, X, hitch output y, and control input u
+% 2) build log: t, X, trailer output y, and control input u
+%    note: here y follows the trailer com (x_t, y_t), not the hitch
 % =========================================================
 N = length(t);
 log = struct();
 log.t  = t;        % [N x 1] time vector
 log.X  = X;        % [N x 12] full state trajectory
-log.yd = zeros(N,2);
-log.y  = zeros(N,2);   % actual hitch position (x, y)
-log.u  = zeros(N,2);   % control inputs [F_drive, tau_r]
-ref_state.mode = 'local_circle'; %% Notice: change this to draw different desire path
+log.yd = zeros(N,2);       % desired hitch position (for now)
+log.y  = zeros(N,2);       % actual trailer com position [x_t, y_t]
+log.u  = zeros(N,2);       % control inputs [F_drive, tau_r]
+
+ref_state.mode = 'local_circle';  % change this to draw different desired paths
 ref_state.initialized = false;
+
 for k = 1:N
     % state and time at step k
     xk = X(k,:).';      % 12x1 state at time step k
     tk = t(k);
 
-    % current hitch position (definition consistent with the controller)
-    xr = xk(1); 
-    yr = xk(2); 
+    % current hitch position (still used for hitch_ref)
+    xr     = xk(1);
+    yr     = xk(2);
     thetar = xk(3);
-    d  = params.d;
-    yk = [xr - d*cos(thetar);
-          yr - d*sin(thetar)];
-    log.y(k,:) = yk.';  % store actual hitch position
+    d      = params.d;
+    y_hitch = [xr - d*cos(thetar);
+               yr - d*sin(thetar)];
+
+    % current trailer com (this is what y follows now)
+    xt = xk(7);
+    yt = xk(8);
+    y_trailer = [xt; yt];
+    log.y(k,:) = y_trailer.';   % store actual trailer com position
 
     % current control input (replay using the same controller_handle)
     [F_drive, tau_r] = controller_handle(xk, tk);
@@ -78,10 +85,12 @@ for k = 1:N
 
     % desired hitch trajectory evaluated at current time,
     % using actual hitch position as initial condition for hitch_ref
-    [yd_k, ~, ~, ref_state] = hitch_ref(tk, yk, ref_state);
-    log.yd(k,:) = yd_k.';    % store desired hitch position
+    [yd_k, ~, ~, ref_state] = hitch_ref(tk, y_hitch, ref_state);
+    log.yd(k,:) = yd_k.';      % still storing desired hitch position
 end
-save('log.mat','log')
+
+save('log.mat','log','-append')
+
 
 % Visualization
 figure('Color','w'); hold on; grid on; axis equal;

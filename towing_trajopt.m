@@ -103,7 +103,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 
         % ---- trailer position tracking ----
         % trailer ref at step k
-        p_tr_ref_k = ref_to.p_tr(:,k);      % 2x1 TO's reference path
+        p_tr_ref_k = p_hitch_ref(:,k);      % 2x1 TO's reference path
         p_tr_k     =  hitch_from_state(xk, params); % actual x_r read from xk
 
         e_tr = p_tr_k - p_tr_ref_k;
@@ -147,7 +147,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     %% terminal cost at k = N+1
     xN = X(:,N+1);
 
-    p_tr_ref_N = ref_to.p_tr(:,N+1);
+    p_tr_ref_N = p_hitch_ref(:,N+1);
     p_tr_N     = hitch_from_state(xN,params);
     e_tr_N     = p_tr_N - p_tr_ref_N;
     obj        = obj + e_tr_N.' * Qp_tr_f * e_tr_N;
