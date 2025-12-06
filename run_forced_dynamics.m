@@ -40,6 +40,7 @@ ref_to = make_straight_ref(tspan, y0);
 save('log.mat','ref_to'); 
 
 [x_to, u_to, to_dbg] = towing_trajopt(dt_to, N_to, ref_to, params.x0, params); %TO
+save('TO_Output','x_to', 'u_to', 'to_dbg');
 traj_to = build_to_qp_traj(dt_to, x_to, u_to, params);
 params.to_traj = traj_to;
 controller = @(x,t) qp_to_wrapper(x, t, params);

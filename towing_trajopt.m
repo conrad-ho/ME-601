@@ -126,10 +126,10 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         %}
 
         % ---- trailer hitch angle penalty ---- 等work以后调参
-        %{
+        
         phi_k = hitch_angle_from_state(xk); % TODO: 根据你的状态定义修改
         obj   = obj + w_phi * (phi_k^2);
-        %}
+        
         % ---- control magnitude ----
         obj   = obj + uk.' * R * uk;
 
