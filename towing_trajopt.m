@@ -28,6 +28,14 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         error('ref must contain field p_hitch or p_tr (2 x (N+1)).');
     end
 
+     % === NEW: 从 hitch path 预计算期望行驶方向 yaw_ref ===
+    yaw_ref = zeros(1, N+1);
+    for k = 1:N
+        dp = p_hitch_ref(:,k+1) - p_hitch_ref(:,k);   % 2x1
+        yaw_ref(k) = atan2(dp(2), dp(1));             % 路径切线方向
+    end
+    yaw_ref(N+1) = yaw_ref(N);  % 末端沿用最后一个方向
+
     %% dimensions and basic bounds
     % TODO: adjust nx, nu 根据你实际的状态和控制维度来改
     nx = 12;    % [xr; yr; thetar; vxr; vyr; wr; xt; yt; thetat; vxt; vyt; wt]
@@ -67,7 +75,6 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     %% cost weights
     % trailer path tracking
     Qp_tr = diag([10, 10]);     % trailer position tracking weight
-
     % robot soft reference
     Qp_r  = diag([1, 1]);       % robot soft position weight
     w_r   = 0.1;                % scalar factor for robot soft penalty
@@ -83,6 +90,11 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     % terminal trailer tracking weight
     Qp_tr_f = diag([50, 50]);
 
+      % === NEW: 姿态相关权重 ===
+    %w_yaw   = 0.01;   % robot yaw 对齐 yaw_ref 的 running penalty
+    w_yaw_f = 0.05;   % 终端 yaw penalty
+    % 可选：对 yaw rate 做一点正则
+    w_wr    = 0.001;  % robot 角速度 wr 正则（先设得很小）
     %% objective and constraints
     obj = 0;
     g   = [];
@@ -101,14 +113,16 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         xk_euler = xk + dt * fk;
         g = [g; xkp - xk_euler];
 
-        % ---- trailer position tracking ----
+        % ---- hitch position tracking ----
         % trailer ref at step k
         p_tr_ref_k = p_hitch_ref(:,k);      % 2x1 TO's reference path
         p_tr_k     =  hitch_from_state(xk, params); % actual x_r read from xk
 
         e_tr = p_tr_k - p_tr_ref_k;
         obj  = obj + e_tr.' * Qp_tr * e_tr;
-        
+         % === yaw-rate regularization: J += w_wr * wr_k^2 ===
+        wr_k = xk(6);          % 假设 x(6) 是 robot yaw rate
+        obj  = obj + w_wr * (wr_k^2);
         % ---- robot soft reference (optional) ----
         %{
         %TODO after make TO work
