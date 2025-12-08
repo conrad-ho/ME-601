@@ -27,13 +27,6 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     else
         error('ref must contain field p_hitch or p_tr (2 x (N+1)).');
     end
-    % === NEW: 从 hitch path 预计算期望行驶方向 yaw_ref ===
-    yaw_ref = zeros(1, N+1);
-    for k = 1:N
-        dp = p_hitch_ref(:,k+1) - p_hitch_ref(:,k);   % 2x1
-        yaw_ref(k) = atan2(dp(2), dp(1));             % 路径切线方向
-    end
-    yaw_ref(N+1) = yaw_ref(N);  % 末端沿用最后一个方向
 
     %% dimensions and basic bounds
     % TODO: adjust nx, nu 根据你实际的状态和控制维度来改
@@ -74,7 +67,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     %% cost weights
     % trailer path tracking
     Qp_tr = diag([10, 10]);     % trailer position tracking weight
-    Qp_tr_f = diag([50, 50]);      % 终端 tracking
+
     % robot soft reference
     Qp_r  = diag([1, 1]);       % robot soft position weight
     w_r   = 0.1;                % scalar factor for robot soft penalty
@@ -82,19 +75,14 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     % trailer hitch angle penalty
     w_phi    = 1.0;             % running penalty
     w_phi_f  = 5.0;             % terminal penalty
-    
+
     % control effort and smoothness
     R  = diag([0.1, 0.1]);      % control magnitude weight
     S  = diag([1.0, 1.0]);      % control difference weight (smoothness)
 
     % terminal trailer tracking weight
     Qp_tr_f = diag([50, 50]);
-    
-    % === NEW: 姿态相关权重 ===
-    w_yaw   = 0.01;   % robot yaw 对齐 yaw_ref 的 running penalty
-    w_yaw_f = 0.05;   % 终端 yaw penalty
-    % 可选：对 yaw rate 做一点正则
-    w_wr    = 0.001;  % robot 角速度 wr 正则（先设得很小）
+
     %% objective and constraints
     obj = 0;
     g   = [];
@@ -113,29 +101,14 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         xk_euler = xk + dt * fk;
         g = [g; xkp - xk_euler];
 
-        % ---- hitch position tracking ----
+        % ---- trailer position tracking ----
         % trailer ref at step k
         p_tr_ref_k = p_hitch_ref(:,k);      % 2x1 TO's reference path
         p_tr_k     =  hitch_from_state(xk, params); % actual x_r read from xk
 
         e_tr = p_tr_k - p_tr_ref_k;
         obj  = obj + e_tr.' * Qp_tr * e_tr;
-        % === NEW: robot yaw 对齐路径切线方向 ===
-        theta_r_k = xk(3);          % robot yaw
-        psi_ref_k = yaw_ref(k);     % 期望方向
-
-        % wrap 到 [-pi,pi]，避免 2π 跳边
-        e_yaw_k = theta_r_k - psi_ref_k;    
-        %{
-        e_yaw_k = atan2( sin(theta_r_k - psi_ref_k), ...
-                         cos(theta_r_k - psi_ref_k) );
-        %}
-        obj     = obj + w_yaw * (e_yaw_k^2);
-
-        % === 可选：对 robot yaw rate 加一点阻尼 ===
-        wr_k = xk(6);               % robot yaw rate
-        obj  = obj + w_wr * (wr_k^2);
-
+        
         % ---- robot soft reference (optional) ----
         %{
         %TODO after make TO work
@@ -153,13 +126,13 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         %}
 
         % ---- trailer hitch angle penalty ---- 等work以后调参
-        %{
+        
         phi_k = hitch_angle_from_state(xk); % TODO: 根据你的状态定义修改
         obj   = obj + w_phi * (phi_k^2);
         
         % ---- control magnitude ----
         obj   = obj + uk.' * R * uk;
-        %}
+
         % ---- control smoothness penalty: ||u_k - u_{k-1}||_S^2 ----
         %{
         %等work以后调整
@@ -178,14 +151,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     p_tr_N     = hitch_from_state(xN,params);
     e_tr_N     = p_tr_N - p_tr_ref_N;
     obj        = obj + e_tr_N.' * Qp_tr_f * e_tr_N;
-    % === NEW: 终端 yaw 靠近路径方向 ===
-    theta_r_N = xN(3);
-    psi_ref_N = yaw_ref(N+1);
-    e_yaw_N   = theta_r_N - psi_ref_N;
-    %e_yaw_N   = atan2( sin(theta_r_N - psi_ref_N), ...
-     %                  cos(theta_r_N - psi_ref_N) );
-    obj       = obj + w_yaw_f * (e_yaw_N^2);
-
+    
     phi_N      = hitch_angle_from_state(xN);
     obj        = obj + w_phi_f * (phi_N^2);
 
