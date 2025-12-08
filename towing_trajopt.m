@@ -92,9 +92,9 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 
       % === NEW: 姿态相关权重 ===
     %w_yaw   = 0.01;   % robot yaw 对齐 yaw_ref 的 running penalty
-    w_yaw_f = 0.05;   % 终端 yaw penalty
+    w_yaw_f = 0.10;   % 终端 yaw penalty
     % 可选：对 yaw rate 做一点正则
-    w_wr    = 0.001;  % robot 角速度 wr 正则（先设得很小）
+    w_wr    = 0.01;  % robot 角速度 wr 正则（先设得很小）
     %% objective and constraints
     obj = 0;
     g   = [];
@@ -168,7 +168,16 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     
     phi_N      = hitch_angle_from_state(xN);
     obj        = obj + w_phi_f * (phi_N^2);
+    
+    % === 终端 yaw 靠近路径方向 ===
+    theta_r_N = xN(3);              % robot 最终 yaw
+    psi_ref_N = yaw_ref(N+1);       % 路径最后一点切线方向
 
+    % 推荐用 wrap，避免 ±pi 跳变
+    e_yaw_N = atan2( sin(theta_r_N - psi_ref_N), ...
+                 cos(theta_r_N - psi_ref_N) );
+
+    obj = obj + w_yaw_f * (e_yaw_N^2);
     %% pack decision variables
     % decision vector: [vec(X); vec(U)]
     OPT_vars = [reshape(X, nx*(N+1), 1);
