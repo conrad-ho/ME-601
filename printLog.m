@@ -24,7 +24,7 @@ log    = data.log;
 ref_to = data.ref_to;
 
 % transpose reference paths: 2xN -> N x 2
-p_hitch_ref = ref_to.p_hitch.';   % [N x 2]
+p_hitch_ref = ref_to.p_r.';   % [N x 2]
 p_tr_ref    = ref_to.p_tr.';      % [N x 2]
 
 % =========================================================

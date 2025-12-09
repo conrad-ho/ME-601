@@ -9,7 +9,8 @@ params.Lr = 0.50;  params.Wr = 0.19;
 params.Lt = 0.514; params.Wt = 0.639;
 params.m_r = 12;   params.I_r = 5;
 params.m_t = 6.3;  params.I_t = 2;
-
+params.alpha_baum = 5.0;
+params.beta_baum  = 10.0;
 % Initial state
 params.x0 = zeros(12,1);   % [xr, yr, thetar, vxr, vyr, wr, xt, yt, thetat, vxt, vyt, wt]
 params.x0(1:3) = [0; 0; 0];  
@@ -53,17 +54,20 @@ if ~isfile('TO_Output.mat')
     to_dbg = S.to_dbg;
 else
     % run TO and save for next time
-    %[x_to, u_to, to_dbg] = towing_trajopt(dt_to, N_to, ref_to, params.x0, params);
-    [x_to, u_to, to_dbg]=towing_trajopt_hitch_lambda(dt_to, N_to, ref_to, params.x0, params);
+    [x_to, u_to, to_dbg] = towing_trajopt(dt_to, N_to, ref_to, params.x0, params);
+    check_to_constraints(x_to, params, dt_to);
+    %[x_to, u_to, to_dbg]=towing_trajopt_hitch_lambda(dt_to, N_to, ref_to, params.x0, params);
     save('TO_Output.mat', 'x_to', 'u_to', 'to_dbg');
 end
 %%
 traj_to = build_to_qp_traj(dt_to, x_to, u_to, params);
 params.to_traj = traj_to;
-%controller = @(x,t) qp_to_wrapper(x, t, params);
-controller = @(x,t) to_replay_controller(t, u_to, dt_to);
+controller = @(x,t) qp_to_wrapper(x, t, params);
+%controller = @(x,t) to_replay_controller(t, u_to, dt_to);
 % Run simulation
+
 simulate_planar_towing_full_dynamics(controller, tspan, params);
+%%
 visualize_to_vs_ref(x_to, ref_to, params, dt_to);
 check_kinematic_constraint_x_to(x_to, params, dt_to);
 check_Jv_full(x_to, params, dt_to);
@@ -77,14 +81,4 @@ function [F, tau] = user_force_input(~,t)
         tau = 0;
     end
 end
-function [F_drive, tau_r] = to_replay_controller(t, u_to, dt_to)
-    % u_to: [N x 2], dt_to: 标称时间步长
-    N = size(u_to, 1);
 
-    % 计算当前时间对应的 index（从 1 到 N）
-    k = floor(t/dt_to) + 1;
-    k = max(1, min(N, k));    % clamp
-
-    F_drive = u_to(k,1);
-    tau_r   = u_to(k,2);
-end

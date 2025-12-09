@@ -38,7 +38,7 @@ opts = odeset('RelTol',1e-7,'AbsTol',1e-9);
 % Diagnostics
 for k = 1:length(t)
     xr = X(k,1); yr = X(k,2); thetar = X(k,3);
-    xt = X( k,7); yt = X(k,8); thetat = X(k,9);
+    xt = X(k,7); yt = X(k,8); thetat = X(k,9);
 
     r_rh = [xr; yr] - params.d*[cos(thetar); sin(thetar)];
     r_th = [xt; yt] + (params.Lt/2)*[cos(thetat); sin(thetat)];
@@ -132,25 +132,10 @@ end
 end
 
 % Full rigid-body dynamics with exact constraints
-function xdot = full_dynamics(t, x, controller_handle, params)
-    % debug: 小小的调用计数
-    persistent dyn_calls
-    if isempty(dyn_calls)
-        dyn_calls = 0;
-    end
-    dyn_calls = dyn_calls + 1;
-
-    if dyn_calls <= 5 || mod(dyn_calls, 5000) == 0
-        fprintf('[DYN] call #%d at t = %.6f\n', dyn_calls, t);
-    end
-
-    % Controller: 注意顺序是 (x,t)
-    [F_drive, tau_r] = controller_handle(x, t);
-    u = [F_drive; tau_r];
-
-    xdot = towing_dynamics_full(x, u, params);
+function dx = full_dynamics(t, x, controller_handle, params)
+    u  = controller_handle(x,t);        % 2x1
+    dx = towing_dynamics_full(x, u, params);
 end
-
 
 
 % Helpers

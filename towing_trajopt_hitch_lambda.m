@@ -4,6 +4,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
 %   目标：只对 hitch 进行轨迹优化，同时在 cost 中考虑
 %        - trailer 对 hitch 的约束反作用力 lambda
 %        - 铰接角 phi 的大小
+%        - robot 朝向相对路径切向的偏差（yaw tracking）
 %
 % inputs:
 %   dt      – time step
@@ -22,7 +23,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
 
     import casadi.*
 
-    %% ============ 解析 hitch 参考轨迹 ============
+    %% ============ 解析 hitch 参考轨迹 ============ 
     if isfield(ref_to, 'p_h')
         p_hitch_ref = ref_to.p_h;          % 推荐：显式给 hitch path
     elseif isfield(ref_to, 'p_hitch')
@@ -34,7 +35,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
         error('ref_to must contain field p_h (or p_hitch / p_tr) of size 2 x (N+1).');
     end
 
-    % === 从 hitch path 预计算终端 yaw_ref（只用在 terminal cost） ===
+    % === 从 hitch path 预计算路径切向 yaw_ref（running + terminal cost 都要用） ===
     yaw_ref = zeros(1, N+1);
     for k = 1:N
         dp = p_hitch_ref(:,k+1) - p_hitch_ref(:,k);   % 2x1
@@ -77,7 +78,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
     X = SX.sym('X', nx, N+1);
     U = SX.sym('U', nu, N);
 
-    %% cost 权重（优先级：hitch > phi,lambda > control）
+    %% cost 权重（优先级：hitch > yaw / phi / lambda > control）
     % 1) hitch tracking（主任务）
     Qh   = diag([30, 30]);       % running
     Qh_f = diag([100, 100]);     % terminal
@@ -92,19 +93,20 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
     w_lam_nonholo = 1e-3;        % nonholonomic 分量权重
     W_lambda      = diag([w_lam_xy, w_lam_xy, w_lam_nonholo]);
 
-    % control 正则
-    R  = diag([0.1, 0.1]);       % u magnitude
+    % 4) 控制正则
+    R  = diag([0.1, 1.0]);       % u magnitude
     S  = diag([0.05, 0.05]);     % u smoothness
 
-    % yaw 正则
-    w_wr    = 0.01;              % yaw rate 正则
-    w_yaw_f = 0.10;              % 终端 yaw 对齐路径方向
+    % 5) yaw 正则：yaw tracking + yaw rate
+    w_wr   = 1.5;               % yaw rate 正则 (wr^2)
+    w_yaw  = 100;                % running yaw tracking (wrap(θr-ψref))^2
+    w_yaw_f = 5.0;               % 终端 yaw 对齐路径方向
 
     %% objective & constraints
     obj = 0;
     g   = [];
 
-    % 初始状态
+    % 初始状态约束
     g = [g; X(:,1) - x0(:)];
 
     %% main loop
@@ -124,22 +126,29 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
         e_hitch_k     = p_hitch_k - p_hitch_ref_k;
         obj           = obj + e_hitch_k.' * Qh * e_hitch_k;
 
-        % --- yaw rate 正则 ---
+        % --- 2) yaw tracking: wrap(θ_r - ψ_ref) 到 [-pi, pi] ---
+        theta_r_k = xk(3);
+        psi_ref_k = yaw_ref(k);  % scalar double, 当常数
+        e_yaw_k   = atan2( sin(theta_r_k - psi_ref_k), ...
+                           cos(theta_r_k - psi_ref_k) );
+        obj       = obj + w_yaw * (e_yaw_k^2);
+
+        % --- 3) yaw rate 正则 ---
         wr_k = xk(6);
         obj  = obj + w_wr * (wr_k^2);
 
-        % --- 2) 铰接角 phi penalty ---
+        % --- 4) 铰接角 phi penalty ---
         phi_k = hitch_angle_from_state(xk);
         obj   = obj + w_phi * (phi_k^2);
 
-        % --- 3) lambda penalty（trailer 反作用力） ---
+        % --- 5) lambda penalty（trailer 反作用力） ---
         lambda_k = f_lam(xk, uk);          % 3x1
         obj      = obj + lambda_k.' * W_lambda * lambda_k;
 
-        % --- control magnitude ---
+        % --- 6) control magnitude ---
         obj = obj + uk.' * R * uk;
 
-        % --- control smoothness ---
+        % --- 7) control smoothness ---
         if k > 1
             ukm1 = U(:,k-1);
             duk  = uk - ukm1;
@@ -160,7 +169,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
     phi_N = hitch_angle_from_state(xN);
     obj   = obj + w_phi_f * (phi_N^2);
 
-    % 终端 yaw 对齐路径方向
+    % 终端 yaw 对齐路径方向 (也做 wrap)
     theta_r_N = xN(3);
     psi_ref_N = yaw_ref(N+1);
     e_yaw_N   = atan2( sin(theta_r_N - psi_ref_N), ...
@@ -185,8 +194,8 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
 
     solver = nlpsol('solver', 'ipopt', nlp, opts);
 
-    %% bounds on constraints
-    ng  = nx*(N+1);
+    %% bounds on constraints (全部是等式，0)
+    ng  = length(g);
     lbg = zeros(ng,1);
     ubg = zeros(ng,1);
 
@@ -231,6 +240,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt_hitch_lambda(dt, N, ref_to, x0,
     to_dbg.stats    = solver.stats();
 
 end
+
 %% ======== helper functions (保持你现有的定义) ========
 
 function xdot = towing_dynamics_full(x, u, params)
