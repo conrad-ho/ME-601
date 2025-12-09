@@ -50,6 +50,23 @@ else
     [x_to, u_to, to_dbg] = towing_trajopt(dt_to, N_to, ref_to, params.x0, params);
     save('TO_Output.mat', 'x_to', 'u_to', 'to_dbg');
 end
+
+% % Debug plots for TO result
+% figure; hold on; grid on; axis equal;
+% plot(ref_to.p_hitch(1,:), ref_to.p_hitch(2,:), 'k--');
+% xr = x_to(:,1); yr = x_to(:,2); thetar = x_to(:,3);
+% d = params.d;
+% hitch_to = [xr - d*cos(thetar), yr - d*sin(thetar)];
+% plot(hitch_to(:,1), hitch_to(:,2), 'b-');
+% legend('Hitch ref','Hitch (TO)');
+% title('TO hitch vs reference');
+% 
+% figure;
+% plot(x_to(:,7), x_to(:,8), 'r-'); title('Trailer COM (TO)');
+% figure;
+% subplot(2,1,1); plot(u_to(:,1)); ylabel('F');
+% subplot(2,1,2); plot(u_to(:,2)); ylabel('\tau'); xlabel('step');
+
 %%
 traj_to = build_to_qp_traj(dt_to, x_to, u_to, params);
 params.to_traj = traj_to;
@@ -68,3 +85,5 @@ function [F, tau] = user_force_input(~,t)
         tau = 0;
     end
 end
+
+printLog;

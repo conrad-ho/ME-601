@@ -18,7 +18,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 %   to_dbg  – struct with debug info (solver stats, cost terms, etc.)
 
     import casadi.*
-    % ============ parse reference path (hitch path) ============
+    % parse reference path (hitch path)
     % 推荐：ref.p_hitch，兼容旧写法：ref.p_tr
     if isfield(ref_to, 'p_hitch')
         p_hitch_ref = ref_to.p_hitch;      % 2 x (N+1)
@@ -55,7 +55,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     x_sym = SX.sym('x', nx, 1);
     u_sym = SX.sym('u', nu, 1);
 
-    % ========= dynamics =========
+    % dynamics
     xdot_sym = towing_dynamics_full(x_sym, u_sym, params);
 
     f_dyn = Function('f_dyn', {x_sym, u_sym}, {xdot_sym});
@@ -96,12 +96,12 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         uk  = U(:,k);
         xkp = X(:,k+1);  % x_{k+1}
 
-        % ---- dynamics constraint: x_{k+1} = x_k + dt * f(x_k, u_k) ----
+        % dynamics constraint: x_{k+1} = x_k + dt * f(x_k, u_k) ----
         fk  = f_dyn(xk, uk);
         xk_euler = xk + dt * fk;
         g = [g; xkp - xk_euler];
 
-        % ---- trailer position tracking ----
+        % trailer position tracking
         % trailer ref at step k
         p_tr_ref_k = p_hitch_ref(:,k);      % 2x1 TO's reference path
         p_tr_k     =  hitch_from_state(xk, params); % actual x_r read from xk
@@ -109,7 +109,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         e_tr = p_tr_k - p_tr_ref_k;
         obj  = obj + e_tr.' * Qp_tr * e_tr;
         
-        % ---- robot soft reference (optional) ----
+        % robot soft reference (optional)
         %{
         %TODO after make TO work
         if isfield(ref, 'p_r')
@@ -234,32 +234,55 @@ end
 function xdot = towing_dynamics_full(x, u, params)
     import casadi.*
 
-    % 拆 q,v
-    q = [x(1:3); x(7:9)];
-    v = [x(4:6); x(10:12)];
+    % q = [xr yr thetar xt yt thetat], qdot = [vxr vyr wr vxt vyt wt]
+    q    = [x(1:3); x(7:9)];
+    qdot = [x(4:6); x(10:12)];
 
-    dyn  = towing_dynamics_mats(x, params);
-    M    = dyn.M;      % 6x6
-    B    = dyn.B;      % 6x2
-    J    = dyn.J;      % 3x6
-    dotJ = dyn.dotJ;   % 3x6
-    vgen = dyn.v;      % 6x1
+    % Mass matrix
+    mr = params.m_r; Ir = params.I_r;
+    mt = params.m_t; It = params.I_t;
+    M = diag(SX([mr, mr, Ir, mt, mt, It]));
+    Minv = diag(1 ./ diag(M));
 
-    % KKT 系统
-    K   = [M, -J';
-           J, SX.zeros(size(J,1), size(J,1))];    % 9x9
-    rhs = [B*u;
-          -dotJ*vgen];                            % 9x1
+    % Inputs → generalized forces Q
+    thetar = x(3);
+    F = u(1); tau = u(2);
+    Q = SX.zeros(6,1);
+    Q(1) = F*cos(thetar);
+    Q(2) = F*sin(thetar);
+    Q(3) = tau;
 
-    sol = K \ rhs;
-    a   = sol(1:6);   % generalized acceleration
+    % Jacobians J and dotJ
+    d  = params.d;
+    Lt = params.Lt;
+    thetat = x(9);
 
-    qdot = vgen;
-    vdot = a;
+    J_holo = [ 1, 0,  d*sin(thetar), -1,  0,  Lt*sin(thetat);
+               0, 1, -d*cos(thetar),  0, -1, -(Lt/2)*cos(thetat) ];
+    J_nonholo = [ 0, 0, 0,  sin(thetat), -cos(thetat), 0 ];
+    J = [J_holo; J_nonholo];
 
-    xdot = [qdot;
-            vdot];
+    wr = x(6); wt = x(12);
+    dotJ_holo = [ 0, 0,  d*cos(thetar)*wr, 0, 0,  Lt*cos(thetat)*wt;
+                  0, 0,  d*sin(thetar)*wr, 0, 0,  (Lt/2)*sin(thetat)*wt ];
+    dotJ_nonholo = [ 0, 0, 0,  cos(thetat)*wt, sin(thetat)*wt, 0 ];
+    dotJ = [dotJ_holo; dotJ_nonholo];
+
+    % Solve for lambda and accelerations
+    K = J * Minv * J.';
+    % small regularization for robustness
+    epsK = 1e-9;
+    K = K + epsK*SX.eye(size(K));
+
+    rhs_lambda = J * Minv * Q + dotJ * qdot;
+    lambda = K \ rhs_lambda;
+
+    ddq = Minv * (Q - J.' * lambda);
+
+    % Assemble xdot
+    xdot = [qdot; ddq];
 end
+
 
 
 function p_tr = hitch_from_state(x,params)
