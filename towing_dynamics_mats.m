@@ -38,22 +38,22 @@ function dyn = towing_dynamics_mats(x, params)
     S_p_r = [-p_r(2); p_r(1)];
     S_p_t = [-p_t(2); p_t(1)];
 
-    % 4) constraint Jacobian J
-    J_holo = [ eye(2), S_p_r, -eye(2), -S_p_t ];
+    % 4) constraint Jacobian J (3x6)
+    J_holo = [ eye(2), S_p_r, -eye(2), -S_p_t ];  % hitch coincidence (2 rows)
     l = [-sin(thetat); cos(thetat)];
-    J_nonholo = [0 0 0 l(1) l(2) 0];
+    J_nonholo = [0 0 0 l(1) l(2) 0];              % trailer lateral velocity = 0
     J = [J_holo; J_nonholo];
 
     % 5) dotJ
-    Sd_p_r = [ d*cos(thetar)*wr; d*sin(thetar)*wr ];
-    Sd_p_t = [ -(Lt/2)*cos(thetat)*wt; (Lt/2)*sin(thetat)*wt ];
+    Sd_p_r = [ d*cos(thetar)*wr;            d*sin(thetar)*wr ];
+    Sd_p_t = [ -(Lt/2)*cos(thetat)*wt;      (Lt/2)*sin(thetat)*wt ];
 
     dotJ_holo = [ zeros(2,2), Sd_p_r, zeros(2,2), -Sd_p_t ];
     ldot = [-cos(thetat)*wt; -sin(thetat)*wt];
     dotJ_nonholo = [0 0 0 ldot(1) ldot(2) 0];
     dotJ = [dotJ_holo; dotJ_nonholo];
 
-    % 6) J and dJ
+    % 6) J_y for hitch task (unchanged)
     J_y = [ 1, 0,  d*sin(thetar),  0, 0, 0;
             0, 1, -d*cos(thetar),  0, 0, 0 ];
     Jdot_y_v = [ d*cos(thetar)*wr;
@@ -67,5 +67,5 @@ function dyn = towing_dynamics_mats(x, params)
     dyn.v = v;
     dyn.J_y = J_y;
     dyn.Jdot_y_v = Jdot_y_v;
-    dyn.H=zeros(6,1);
+    dyn.H = zeros(6,1);
 end
