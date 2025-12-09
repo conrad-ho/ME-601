@@ -46,7 +46,7 @@ function dyn = towing_dynamics_mats(x, params)
 
     % 5) dotJ
     Sd_p_r = [ d*cos(thetar)*wr; d*sin(thetar)*wr ];
-    Sd_p_t = [ -(Lt/2)*cos(thetat)*wt; -(Lt/2)*sin(thetat)*wt ];
+    Sd_p_t = [ -(Lt/2)*cos(thetat)*wt; (Lt/2)*sin(thetat)*wt ];
 
     dotJ_holo = [ zeros(2,2), Sd_p_r, zeros(2,2), -Sd_p_t ];
     ldot = [-cos(thetat)*wt; -sin(thetat)*wt];
