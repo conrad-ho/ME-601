@@ -25,6 +25,6 @@ function [F_drive, tau_r] = qp_to_wrapper(x, t, params)
     yddot_ff  = interp1(t_ref, traj.yddot_ff.', t_clamped, 'pchip').';
 
     % ---------- 调用原来的 task-space QP 控制器 ----------
-    [F_drive, tau_r] = task_space_qp_controller( ...
+    [F_drive, tau_r] = task_space_qp_controller_proj( ...
                         x, t, params, yd, ydot_d, yddot_ff);
 end
