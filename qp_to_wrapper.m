@@ -1,30 +1,37 @@
 function [F_drive, tau_r] = qp_to_wrapper(x, t, params)
-% QP wrapper: 利用 TO 生成的 hitch 轨迹作为参考
-% 要求 params.to_traj 已经由 build_to_qp_traj 构造好
-
     traj = params.to_traj;
     d    = params.d;
 
-    % ---------- 当前 hitch 输出（仅用于 debug，可选） ----------
-    dyn       = towing_dynamics_mats(x, params);
-    J_y       = dyn.J_y;
-    vgen      = dyn.v;
+    % 当前 hitch 输出（如果 task_space_qp_controller_proj 里不需要可以删掉）
+    dyn  = towing_dynamics_mats(x, params);
+    J_y  = dyn.J_y;
+    vgen = dyn.v;
 
     xr     = x(1);
     yr     = x(2);
     thetar = x(3);
     y      = [xr - d*cos(thetar);
-              yr - d*sin(thetar)];  %#ok<NASGU>
+              yr - d*sin(thetar)];
+    ydot   = J_y * vgen;  %#ok<NASGU>
 
-    % ---------- 从 traj_to 中插值出参考 yd, ydot_d, yddot_ff ----------
-    t_ref     = traj.t;
-    t_clamped = min(max(t, t_ref(1)), t_ref(end));   % 超出范围就 clamp
+    % ==== 用索引而不是 interp1 对齐 TO 轨迹 ====
+    t_ref = traj.t;                  % 1 x (N+1)
+    dt    = t_ref(2) - t_ref(1);     % assume uniform
 
-    yd        = interp1(t_ref, traj.y.'       , t_clamped, 'pchip').';
-    ydot_d    = interp1(t_ref, traj.ydot.'    , t_clamped, 'pchip').';
-    yddot_ff  = interp1(t_ref, traj.yddot_ff.', t_clamped, 'pchip').';
+    if t <= t_ref(1)
+        k = 1;
+    elseif t >= t_ref(end)
+        k = numel(t_ref);
+    else
+        k = floor((t - t_ref(1))/dt) + 1;
+        k = max(1, min(k, numel(t_ref)));
+    end
 
-    % ---------- 调用原来的 task-space QP 控制器 ----------
+    yd       = traj.y(:,       k);   % 2x1
+    ydot_d   = traj.ydot(:,    k);   % 2x1
+    yddot_ff = traj.yddot_ff(:,k);   % 2x1
+
+    % ==== 调回原来的 CasADi 版 QP ====
     [F_drive, tau_r] = task_space_qp_controller_proj( ...
                         x, t, params, yd, ydot_d, yddot_ff);
 end

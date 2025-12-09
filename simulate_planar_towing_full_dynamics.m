@@ -38,7 +38,7 @@ opts = odeset('RelTol',1e-7,'AbsTol',1e-9);
 % Diagnostics
 for k = 1:length(t)
     xr = X(k,1); yr = X(k,2); thetar = X(k,3);
-    xt = X(k,7); yt = X(k,8); thetat = X(k,9);
+    xt = X( k,7); yt = X(k,8); thetat = X(k,9);
 
     r_rh = [xr; yr] - params.d*[cos(thetar); sin(thetar)];
     r_th = [xt; yt] + (params.Lt/2)*[cos(thetat); sin(thetat)];
@@ -110,7 +110,7 @@ Nsteps = numel(idx_vec);
 traj_x_r = NaN(1, Nsteps);traj_y_r = NaN(1, Nsteps);
 traj_x_t = NaN(1, Nsteps);traj_y_t = NaN(1, Nsteps);
 k=1;
-for i = 1:5:length(t)
+for i = 1:1:length(t)
     k = k + 1;  
     xr = X(i,1); yr = X(i,2); thetar = X(i,3);
     xt = X(i,7); yt = X(i,8); thetat = X(i,9);
@@ -133,65 +133,13 @@ end
 
 % Full rigid-body dynamics with exact constraints
 function dx = full_dynamics(t, x, controller_handle, params)
+    % controller_handle must return two scalars: F_drive and tau_r
+    [F_drive, tau_r] = controller_handle(x, t);  % <-- 注意这里是两个输出
+    u = [F_drive; tau_r];                        % 2x1 control vector
 
-xr = x(1); yr = x(2); thetar = x(3);
-vxr = x(4); vyr = x(5); wr = x(6);
-xt = x(7); yt = x(8); thetat = x(9);
-vxt = x(10); vyt = x(11); wt = x(12);
-
-m_r = params.m_r; I_r = params.I_r;
-m_t = params.m_t; I_t = params.I_t;
-d   = params.d;  Lt = params.Lt;
-
-% Controller forces
-[F_drive, tau_r] = controller_handle(x,t);
-Fr_body = [cos(thetar); sin(thetar)] * F_drive;
-
-% Hitch location offsets (body frame)
-r_rh_body = [-d; 0];
-r_th_body = [ Lt/2; 0];
-
-% World hitch points
-r_rh = [xr; yr] + R2(thetar) * r_rh_body;
-r_th = [xt; yt] + R2(thetat) * r_th_body;
-
-% Jacobians
-p_r = R2(thetar) * r_rh_body;
-p_t = R2(thetat) * r_th_body;
-S_p_r = [-p_r(2); p_r(1)];
-S_p_t = [-p_t(2); p_t(1)];
-
-J_holo = [ eye(2),  S_p_r,  -eye(2), -S_p_t ];
-
-l = [-sin(thetat); cos(thetat)];
-J_nonholo = [0 0 0 l(1) l(2) 0];
-
-J = [J_holo; J_nonholo];
-
-M = diag([m_r m_r I_r m_t m_t I_t]);
-v = [vxr; vyr; wr; vxt; vyt; wt];
-
-Q = [Fr_body; tau_r; zeros(3,1)];
-
-phi     = r_rh - r_th;
-phi_dot = J_holo * v;
-
-zeta = 0.9;
-omega_b = 10.0;
-b_holo = -(2*zeta*omega_b.*phi_dot + (omega_b^2).*phi);
-b_nonholo = -J_nonholo * v;
-b_total = [b_holo; b_nonholo];
-
-A = [M, J'; J, zeros(size(J,1))];
-rhs = [Q; b_total];
-sol = A \ rhs;
-
-a = sol(1:6);
-
-fprintf('t=%.2f, hitch=%.4f\n', t, norm(phi));
-
-dx = [vxr; vyr; wr; a(1); a(2); a(3); vxt; vyt; wt; a(4); a(5); a(6)];
+    dx = towing_dynamics_full(x, u, params);
 end
+
 
 % Helpers
 function R = R2(th), R=[cos(th) -sin(th); sin(th) cos(th)]; end
