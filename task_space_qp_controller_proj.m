@@ -73,7 +73,8 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
 
     % 误差 e = (A_y*u + b_y) - yddot_des
     Wy = eye(2);
-    Wu = 1e-3 * eye(2);              % 对 u 做一点正则
+    Wu = diag([1e-3, 1e-1]);
+    %Wu = 1e-3 * eye(2);              % 对 u 做一点正则
 
     % 成本 0.5 * ||Wy^(1/2) e||^2 + 0.5 u'Wu u
     H = A_y.' * Wy * A_y + Wu;       % 2x2
