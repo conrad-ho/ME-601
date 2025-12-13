@@ -1,6 +1,6 @@
 function dyn = towing_dynamics_mats(x, params)
     % x: 12x1 [xr; yr; thetar; vxr; vyr; wr; xt; yt; thetat; vxt; vyt; wt]
-
+    error('This Func is not been use, u are using wrong func');
     xr = x(1); yr = x(2); thetar = x(3);
     vxr = x(4); vyr = x(5); wr = x(6);
     xt = x(7); yt = x(8); thetat = x(9);

@@ -1,0 +1,239 @@
+function dyn = towing_dynamic(x, params, need)
+% towing_dynamic(x, params, need)
+% need: 'mats' | 'proj' | 'full' | 'task'
+%
+% outputs:
+%   mats: M,B,J,dotJ,v,H,J_y,Jdot_y_v,y,ydot
+%   proj: +K,P_u,p0,a(u),res_acc(u),res_vel(),condK()
+%   full: +xdot(u)
+%   task: +A_y,b_y,yddot(u)
+%
+%{ 
+Using instruction:
+use mats only: 
+    dyn = towing_dynamic(x, params, 'mats');
+    M = dyn.M;
+    J = dyn.J;
+    dotJ = dyn.dotJ;
+    v = dyn.v;
+    H = dyn.H;
+    % monitor rv）
+    rv = norm(J*v);  % velocity-level residual
+    fprintf('rv = %.3e\n', rv);
+using in QP:
+    dyn = towing_dynamic(x, params, 'task');
+
+    A_y = dyn.A_y;      % 2x2
+    b_y = dyn.b_y;      % 2x1
+    y   = dyn.y;        % 2x1
+    ydot= dyn.ydot;     % 2x1
+%}
+    if nargin < 3 || isempty(need)
+        need = 'mats';
+    end
+    if isstring(need), need = char(need); end
+
+    % ---- layer 0: mats ----
+    m = towing_dynamics_mats(x, params);
+
+    dyn = struct;
+    dyn.x = x;
+    dyn.params = params;
+
+    dyn.M = m.M;
+    dyn.B = m.B;
+    dyn.J = m.J;
+    dyn.dotJ = m.dotJ;
+    dyn.v = m.v;
+    dyn.H = m.H;
+
+    dyn.J_y = m.J_y;
+    dyn.Jdot_y_v = m.Jdot_y_v;
+
+    % cheap output info
+    xr = x(1); yr = x(2); thetar = x(3);
+    d = params.d;
+
+    dyn.y = [xr - d*cos(thetar);
+             yr - d*sin(thetar)];
+    dyn.ydot = dyn.J_y * dyn.v;
+
+    if strcmpi(need,'mats')
+        return;
+    end
+
+    % ---- layer 1: projected affine accel a = P_u*u + p0 ----
+    M = dyn.M; B = dyn.B; J = dyn.J; dotJ = dyn.dotJ; v = dyn.v; H = dyn.H;
+
+    % avoid explicit inv(M): use linear solves
+    MinvB  = M \ B;        % 6x2
+    MinvH  = M \ H;        % 6x1
+    MinvJt = M \ (J.');    % 6x3
+
+    K = J * MinvJt;        % 3x3
+    dyn.K = K;
+
+    dyn.P_u = MinvB - MinvJt * (K \ (J * MinvB));   % 6x2
+
+    term0 = -J * MinvH + dotJ * v;                  % 3x1
+    dyn.p0 = -MinvH - MinvJt * (K \ term0);          % 6x1
+
+    dyn.a = @(u) dyn.P_u * u + dyn.p0;
+
+    % debugging helpers
+    dyn.res_acc = @(u) norm(dyn.J * dyn.a(u) + dyn.dotJ * dyn.v);
+    dyn.res_vel = @()  norm(dyn.J * dyn.v);
+    dyn.condK   = @()  cond(dyn.K);
+
+    if strcmpi(need,'proj')
+        return;
+    end
+
+    % ---- layer 2a: full state derivative ----
+    dyn.xdot = @(u) [dyn.v; dyn.a(u)];
+
+    if strcmpi(need,'full')
+        return;
+    end
+
+    % ---- layer 2b: task-space affine yddot = A_y*u + b_y ----
+    dyn.A_y = dyn.J_y * dyn.P_u;                 % 2x2
+    dyn.b_y = dyn.J_y * dyn.p0 + dyn.Jdot_y_v;   % 2x1
+    dyn.yddot = @(u) dyn.A_y * u + dyn.b_y;
+
+    if strcmpi(need,'task')
+        return;
+    end
+
+    error('towing_dynamic: unknown need = %s', need);
+end
+function dyn = towing_dynamics_mats(x, params)
+% towing_dynamics_mats
+% output type matches x:
+% - x double -> outputs double
+% - x casadi.SX/MX -> outputs casadi.SX/MX
+
+    import casadi.*
+
+    % helpers
+    clike = @(val) const_like(x, val);
+    zlike = @(m,n) zeros_like(x, m, n);
+    elike = @(n)   eye_like(x, n);
+
+    % unpack state
+    xr = x(1); yr = x(2); thetar = x(3);
+    vxr = x(4); vyr = x(5); wr = x(6);
+    xt = x(7); yt = x(8); thetat = x(9);
+    vxt = x(10); vyt = x(11); wt = x(12);
+
+    v = [vxr; vyr; wr; vxt; vyt; wt];
+
+    % params -> lift to x-type when used
+    m_r = clike(params.m_r); I_r = clike(params.I_r);
+    m_t = clike(params.m_t); I_t = clike(params.I_t);
+    d   = clike(params.d);   Lt  = clike(params.Lt);
+
+    % 1) M
+    M = diag([m_r; m_r; I_r; m_t; m_t; I_t]);
+
+    % 2) B
+    B = [ cos(thetar), clike(0);
+          sin(thetar), clike(0);
+          clike(0),    clike(1);
+          clike(0),    clike(0);
+          clike(0),    clike(0);
+          clike(0),    clike(0) ];
+
+    % 3) constraint geometry
+    r_rh_body = [-d; clike(0)];
+    r_th_body = [Lt/2; clike(0)];
+
+    Rr = [cos(thetar), -sin(thetar);
+          sin(thetar),  cos(thetar)];
+    Rt = [cos(thetat), -sin(thetat);
+          sin(thetat),  cos(thetat)];
+
+    p_r = Rr * r_rh_body;
+    p_t = Rt * r_th_body;
+
+    S_p_r = [-p_r(2); p_r(1)];
+    S_p_t = [-p_t(2); p_t(1)];
+
+    % 4) J
+    J_holo = [ elike(2), S_p_r, -elike(2), -S_p_t ];
+
+    l = [-sin(thetat); cos(thetat)];
+    J_nonholo = [clike(0) clike(0) clike(0) l(1) l(2) clike(0)];
+
+    J = [J_holo; J_nonholo];
+
+    % 5) dotJ
+    Sd_p_r = [ d*cos(thetar)*wr;
+               d*sin(thetar)*wr ];
+
+    Sd_p_t = [ -(Lt/2)*cos(thetat)*wt;
+               -(Lt/2)*sin(thetat)*wt ];
+
+    dotJ_holo = [ zlike(2,2), Sd_p_r, zlike(2,2), -Sd_p_t ];
+
+    ldot = [-cos(thetat)*wt; -sin(thetat)*wt];
+    dotJ_nonholo = [clike(0) clike(0) clike(0) ldot(1) ldot(2) clike(0)];
+
+    dotJ = [dotJ_holo; dotJ_nonholo];
+
+    % 6) task jacobian (hitch point)
+    J_y = [ clike(1), clike(0),  d*sin(thetar),  clike(0), clike(0), clike(0);
+            clike(0), clike(1), -d*cos(thetar),  clike(0), clike(0), clike(0) ];
+
+    Jdot_y_v = [ d*cos(thetar)*wr;
+                 d*sin(thetar)*wr ];
+
+    % 7) bias term H
+    H = zlike(6,1);
+
+    dyn = struct;
+    dyn.M = M;
+    dyn.B = B;
+    dyn.J = J;
+    dyn.dotJ = dotJ;
+    dyn.v = v;
+    dyn.J_y = J_y;
+    dyn.Jdot_y_v = Jdot_y_v;
+    dyn.H = H;
+end
+
+% ---- local helpers ----
+function c = const_like(x, val)
+    import casadi.*
+    if isa(x,'casadi.SX')
+        c = SX(val);
+    elseif isa(x,'casadi.MX')
+        c = MX(val);
+    else
+        c = val;
+    end
+end
+
+function Z = zeros_like(x, m, n)
+    import casadi.*
+    if isa(x,'casadi.SX')
+        Z = SX.zeros(m,n);
+    elseif isa(x,'casadi.MX')
+        Z = MX.zeros(m,n);
+    else
+        Z = zeros(m,n);
+    end
+end
+
+function I = eye_like(x, n)
+    import casadi.*
+    if isa(x,'casadi.SX')
+        I = SX.eye(n);
+    elseif isa(x,'casadi.MX')
+        I = MX.eye(n);
+    else
+        I = eye(n);
+    end
+end
+
+

@@ -1,170 +1,131 @@
 function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 % towing_trajopt
-%   basic multiple shooting trajectory optimization for a robot+trailer system.
-%   trailer is the main tracking target, robot has weaker soft constraints.
-%
-% inputs:
-%   dt      – time step
-%   N       – horizon length (number of control steps, states are N+1)
-%   ref_to 结构：
-%   ref_to.t        : 1 x (N+1) 时间网格（可选）
-%   ref_to.p_hitch  : 2 x (N+1) hitch 期望位置 [xh_ref; yh_ref]
-%   x0      – initial state (nx x 1)
-%   params  – struct with model parameters (masses, lengths, etc.)
-%
-% outputs:
-%   x_sol   – (N+1) x nx optimal state trajectory
-%   u_sol   – N x nu optimal control trajectory
-%   to_dbg  – struct with debug info (solver stats, cost terms, etc.)
+% basic multiple shooting trajectory optimization for a robot+trailer system.
+% trailer/hitch is the main tracking target, robot has weaker soft constraints.
 
     import casadi.*
+
     % parse reference path (hitch path)
-    % 推荐：ref.p_hitch，兼容旧写法：ref.p_tr
+    % preferred: ref_to.p_hitch, legacy: ref_to.p_tr
     if isfield(ref_to, 'p_hitch')
-        p_hitch_ref = ref_to.p_hitch;      % 2 x (N+1)
+        p_hitch_ref = ref_to.p_hitch;   % 2 x (N+1)
     elseif isfield(ref_to, 'p_tr')
-        p_hitch_ref = ref_to.p_tr;         % 2 x (N+1)，旧字段名
+        p_hitch_ref = ref_to.p_tr;      % 2 x (N+1)
     else
-        error('ref must contain field p_hitch or p_tr (2 x (N+1)).');
+        error('ref_to must contain field p_hitch or p_tr (2 x (N+1)).');
     end
 
-    %% dimensions and basic bounds
-    % TODO: adjust nx, nu 根据你实际的状态和控制维度来改
+    %% dimensions and bounds
     nx = 12;    % [xr; yr; thetar; vxr; vyr; wr; xt; yt; thetat; vxt; vyt; wt]
-    nu = 2;   % example: [F, tau]
+    nu = 2;     % u = [F; tau]
 
-    % control bounds (example)
-    if isfield(params, 'Fmax')
-        Fmax = params.Fmax;
-    else
-        Fmax = 1e3;
-    end
-    if isfield(params, 'Taumax')
-        Taumax = params.Taumax;
-    else
-        Taumax = 1e3;
-    end
-    u_min = [-Fmax; -Taumax];  % 2x1
-    u_max = [ Fmax;  Taumax];  % 2x1
+    % control bounds
+    if isfield(params, 'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
+    if isfield(params, 'Taumax'), Taumax = params.Taumax; else, Taumax = 1e3; end
+    u_min = [-Fmax; -Taumax];
+    u_max = [ Fmax;  Taumax];
 
-    % optional state bounds (可以先不严，后面再收紧)
+    % state bounds (keep loose first)
     x_min = -inf(nx,1);
     x_max =  inf(nx,1);
 
-    %% symbolic variables: state, control
+    %% casadi symbols
     x_sym = SX.sym('x', nx, 1);
     u_sym = SX.sym('u', nu, 1);
 
-    % dynamics
-    xdot_sym = towing_dynamics_full(x_sym, u_sym, params);
+    % ================================
+    % new unified dynamics interface
+    % ================================
+    % expects: dyn_full.xdot(u) returns 12x1 state derivative [v; a(u)]
+    dyn_full = towing_dynamic(x_sym, params, 'full');
+    xdot_sym = dyn_full.xdot(u_sym);
 
+    % wrap into a casadi function for use in multiple shooting
     f_dyn = Function('f_dyn', {x_sym, u_sym}, {xdot_sym});
 
-    %% multiple shooting variables
-    X = SX.sym('X', nx, N+1);   % states over horizon
-    U = SX.sym('U', nu, N);     % controls over horizon
+    %% multiple shooting decision variables
+    X = SX.sym('X', nx, N+1);
+    U = SX.sym('U', nu, N);
 
-    %% cost weights
-    % trailer path tracking
-    Qp_tr = diag([10, 10]);     % trailer position tracking weight
+    %% weights
+    Qp_tr   = diag([10, 10]);     % hitch tracking (running)
+    Qp_tr_f = diag([50, 50]);     % hitch tracking (terminal)
 
-    % robot soft reference
-    Qp_r  = diag([1, 1]);       % robot soft position weight
-    w_r   = 0.1;                % scalar factor for robot soft penalty
+    Qp_r = diag([1, 1]);          % robot soft tracking (unused for now)
+    w_r  = 0.1;
 
-    % trailer hitch angle penalty
-    w_phi    = 1.0;             % running penalty
-    w_phi_f  = 5.0;             % terminal penalty
+    w_phi   = 1.0;                % running hitch angle penalty
+    w_phi_f = 5.0;                % terminal hitch angle penalty
 
-    % control effort and smoothness
-    R  = diag([0.1, 0.1]);      % control magnitude weight
-    S  = diag([1.0, 1.0]);      % control difference weight (smoothness)
-
-    % terminal trailer tracking weight
-    Qp_tr_f = diag([50, 50]);
+    R = diag([0.1, 0.1]);         % control effort
+    S = diag([1.0, 1.0]);         % control smoothness (unused for now)
 
     %% objective and constraints
     obj = 0;
     g   = [];
 
-    % initial condition constraint: X(:,1) = x0
+    % initial condition
     g = [g; X(:,1) - x0(:)];
 
-    %% main loop over horizon
     for k = 1:N
         xk  = X(:,k);
         uk  = U(:,k);
-        xkp = X(:,k+1);  % x_{k+1}
+        xkp = X(:,k+1);
 
-        % dynamics constraint: x_{k+1} = x_k + dt * f(x_k, u_k) ----
-        fk  = f_dyn(xk, uk);
-        xk_euler = xk + dt * fk;
-        g = [g; xkp - xk_euler];
+        % euler integration constraint
+        fk = f_dyn(xk, uk);
+        g  = [g; xkp - (xk + dt * fk)];
 
-        % trailer position tracking
-        % trailer ref at step k
-        p_tr_ref_k = p_hitch_ref(:,k);      % 2x1 TO's reference path
-        p_tr_k     =  hitch_from_state(xk, params); % actual x_r read from xk
+        % hitch position tracking
+        p_ref_k = p_hitch_ref(:,k);
+        p_k     = hitch_from_state(xk, params);
+        e       = p_k - p_ref_k;
+        obj     = obj + e.' * Qp_tr * e;
 
-        e_tr = p_tr_k - p_tr_ref_k;
-        obj  = obj + e_tr.' * Qp_tr * e_tr;
-        
-        % robot soft reference (optional)
+        % robot soft reference (kept as placeholder, still commented)
         %{
-        %TODO after make TO work
-        if isfield(ref, 'p_r')
-            p_r_ref_k = ref.p_r(:,k);    % 2x1
+        if isfield(ref_to, 'p_r')
+            p_r_ref_k = ref_to.p_r(:,k);
         else
-            % 如果没有单独给 robot 参考，可以取近似：
-            % 例如和 trailer ref 一样，或者加一点几何偏移
-            p_r_ref_k = p_tr_ref_k;
+            p_r_ref_k = p_ref_k;
         end
-        
-        p_r_k = robot_pos_from_state(xk);   % TODO: 根据你的状态定义修改
+        p_r_k = robot_pos_from_state(xk);
         e_r   = p_r_k - p_r_ref_k;
         obj   = obj + w_r * (e_r.' * Qp_r * e_r);
         %}
 
-        % ---- trailer hitch angle penalty ---- 等work以后调参
-        
-        phi_k = hitch_angle_from_state(xk); % TODO: 根据你的状态定义修改
+        % hitch angle penalty
+        phi_k = hitch_angle_from_state(xk);
         obj   = obj + w_phi * (phi_k^2);
-        
-        % ---- control magnitude ----
-        obj   = obj + uk.' * R * uk;
 
-        % ---- control smoothness penalty: ||u_k - u_{k-1}||_S^2 ----
+        % control effort
+        obj = obj + uk.' * R * uk;
+
+        % control smoothness (optional)
         %{
-        %等work以后调整
         if k > 1
-            ukm1 = U(:,k-1);
-            duk  = uk - ukm1;
-            obj  = obj + duk.' * S * duk;
+            duk = uk - U(:,k-1);
+            obj = obj + duk.' * S * duk;
         end
         %}
     end
 
-    %% terminal cost at k = N+1
+    % terminal cost
     xN = X(:,N+1);
 
-    p_tr_ref_N = p_hitch_ref(:,N+1);
-    p_tr_N     = hitch_from_state(xN,params);
-    e_tr_N     = p_tr_N - p_tr_ref_N;
-    obj        = obj + e_tr_N.' * Qp_tr_f * e_tr_N;
-    
-    phi_N      = hitch_angle_from_state(xN);
-    obj        = obj + w_phi_f * (phi_N^2);
+    p_ref_N = p_hitch_ref(:,N+1);
+    p_N     = hitch_from_state(xN, params);
+    eN      = p_N - p_ref_N;
+    obj     = obj + eN.' * Qp_tr_f * eN;
 
-    %% pack decision variables
-    % decision vector: [vec(X); vec(U)]
+    phi_N   = hitch_angle_from_state(xN);
+    obj     = obj + w_phi_f * (phi_N^2);
+
+    %% pack nlp
     OPT_vars = [reshape(X, nx*(N+1), 1);
                 reshape(U, nu*N, 1)];
 
-    %% build NLP
-    nlp = struct;
-    nlp.x = OPT_vars;
-    nlp.f = obj;
-    nlp.g = g;
+    nlp = struct('x', OPT_vars, 'f', obj, 'g', g);
 
     opts = struct;
     opts.ipopt.print_level = 3;
@@ -174,13 +135,8 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 
     solver = nlpsol('solver', 'ipopt', nlp, opts);
 
-    %% bounds on constraints
-    % equality constraints: initial condition + dynamics
-    % g has (nx*(N+1)) entries from:
-    %   - nx from X(:,1)-x0
-    %   - nx*N from dynamics
-    % 没有别的不等式约束的话，全部是等式 => lbg=ubg=0
-    ng = nx*(N+1);
+    %% bounds on constraints (all equalities)
+    ng  = nx*(N+1);
     lbg = zeros(ng,1);
     ubg = zeros(ng,1);
 
@@ -191,120 +147,53 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     lbx = -inf(size(OPT_vars));
     ubx =  inf(size(OPT_vars));
 
-    % state bounds
     lbx(1:nX) = repmat(x_min, N+1, 1);
     ubx(1:nX) = repmat(x_max, N+1, 1);
 
-    % control bounds
     lbx(nX+1:nX+nU) = repmat(u_min, N, 1);
     ubx(nX+1:nX+nU) = repmat(u_max, N, 1);
 
     %% initial guess
-    % TODO: 这里可以用 path interpolation / simple rollout 给一个更聪明的初值
-    X_init = repmat(x0(:), 1, N+1);  % 先所有步都用初始状态
-    U_init = zeros(nu, N);           % 控制都从零开始
-
+    X_init  = repmat(x0(:), 1, N+1);
+    U_init  = zeros(nu, N);
     x0_guess = [reshape(X_init, nX, 1);
                 reshape(U_init, nU, 1)];
 
-    %% solve NLP
+    %% solve
     sol = solver('x0', x0_guess, ...
                  'lbx', lbx, 'ubx', ubx, ...
                  'lbg', lbg, 'ubg', ubg);
 
     sol_vec = full(sol.x);
 
-    % unpack solution
     X_opt = reshape(sol_vec(1:nX), nx, N+1);
     U_opt = reshape(sol_vec(nX+1:end), nu, N);
 
     x_sol = X_opt.';   % (N+1) x nx
     u_sol = U_opt.';   % N x nu
 
-    % debug info
     to_dbg = struct;
-    to_dbg.obj      = full(sol.f);
-    to_dbg.sol_vec  = sol_vec;
-    to_dbg.stats    = solver.stats();
-
+    to_dbg.obj     = full(sol.f);
+    to_dbg.sol_vec = sol_vec;
+    to_dbg.stats   = solver.stats();
 end
 
-%% ======== helper functions (placeholders) ========
+%% ===== helper functions =====
 
-function xdot = towing_dynamics_full(x, u, params)
-    import casadi.*
-
-    % q = [xr yr thetar xt yt thetat], qdot = [vxr vyr wr vxt vyt wt]
-    q    = [x(1:3); x(7:9)];
-    qdot = [x(4:6); x(10:12)];
-
-    % Mass matrix
-    mr = params.m_r; Ir = params.I_r;
-    mt = params.m_t; It = params.I_t;
-    M = diag(SX([mr, mr, Ir, mt, mt, It]));
-    Minv = diag(1 ./ diag(M));
-
-    % Inputs → generalized forces Q
-    thetar = x(3);
-    F = u(1); tau = u(2);
-    Q = SX.zeros(6,1);
-    Q(1) = F*cos(thetar);
-    Q(2) = F*sin(thetar);
-    Q(3) = tau;
-
-    % Jacobians J and dotJ
-    d  = params.d;
-    Lt = params.Lt;
-    thetat = x(9);
-
-    J_holo = [ 1, 0,  d*sin(thetar), -1,  0,  Lt*sin(thetat);
-               0, 1, -d*cos(thetar),  0, -1, -(Lt/2)*cos(thetat) ];
-    J_nonholo = [ 0, 0, 0,  sin(thetat), -cos(thetat), 0 ];
-    J = [J_holo; J_nonholo];
-
-    wr = x(6); wt = x(12);
-    dotJ_holo = [ 0, 0,  d*cos(thetar)*wr, 0, 0,  Lt*cos(thetat)*wt;
-                  0, 0,  d*sin(thetar)*wr, 0, 0,  (Lt/2)*sin(thetat)*wt ];
-    dotJ_nonholo = [ 0, 0, 0,  cos(thetat)*wt, sin(thetat)*wt, 0 ];
-    dotJ = [dotJ_holo; dotJ_nonholo];
-
-    % Solve for lambda and accelerations
-    K = J * Minv * J.';
-    % small regularization for robustness
-    epsK = 1e-9;
-    K = K + epsK*SX.eye(size(K));
-
-    rhs_lambda = J * Minv * Q + dotJ * qdot;
-    lambda = K \ rhs_lambda;
-
-    ddq = Minv * (Q - J.' * lambda);
-
-    % Assemble xdot
-    xdot = [qdot; ddq];
-end
-
-
-
-function p_tr = hitch_from_state(x,params)
+function p_h = hitch_from_state(x, params)
     d  = params.d;
     xr = x(1);  yr = x(2);  thetar = x(3);
-
-    % hitch 点在世界坐标下的位置
-    p_tr = [xr - d*cos(thetar);
-            yr - d*sin(thetar)];
+    p_h = [xr - d*cos(thetar);
+           yr - d*sin(thetar)];
 end
 
 function p_r = robot_pos_from_state(x)
-    % TODO: modify according to your state definition
-    % example: x = [xr; yr; thetar; xt; yt; thetat]
     xr = x(1);
     yr = x(2);
-    p_r = [xr; yr];     
+    p_r = [xr; yr];
 end
 
 function phi = hitch_angle_from_state(x)
-    % TODO: modify according to your hitch definition
-    % example: relative yaw between trailer and robot
     theta_r = x(3);
     theta_t = x(9);
     phi = theta_t - theta_r;

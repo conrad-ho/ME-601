@@ -1,6 +1,6 @@
 function xdot = towing_dynamics_full(x, u, params)
     import casadi.*
-
+    error('This Func is not been use, u are using wrong func');
     % 拆 q,v
     q = [x(1:3); x(7:9)];
     v = [x(4:6); x(10:12)];
