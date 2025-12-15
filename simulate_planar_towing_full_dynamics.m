@@ -82,6 +82,12 @@ sim_log.p_h_r  = p_h_r;                   % [N x 2]
 sim_log.p_h_t  = p_h_t;                   % [N x 2]
 sim_log.e_h    = e_h;                     % [N x 1]
 
+
+% also store bounds for analysis convenience
+if isfield(params,'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
+if isfield(params,'Taumax'), Taumax = params.Taumax; else, Taumax = 1e3; end
+sim_log.lb = [-Fmax; -Taumax];
+sim_log.ub = [ Fmax;  Taumax];
 % constraint monitors
 if isfield(dbg,'rv'), sim_log.rv = dbg.rv(:); else, sim_log.rv = nan(N,1); end
 
@@ -95,11 +101,15 @@ if isfield(dbg,'qp_h'),       sim_log.qp_h       = dbg.qp_h;        end
 if isfield(dbg,'qp_hdot'),    sim_log.qp_hdot    = dbg.qp_hdot;     end
 if isfield(dbg,'qp_e_yddot'), sim_log.qp_e_yddot = dbg.qp_e_yddot;  end
 if isfield(dbg,'qp_yddot'),   sim_log.qp_yddot   = dbg.qp_yddot;    end
+if isfield(dbg,'u'),        sim_log.u        = dbg.u;        end
+if isfield(dbg,'u_sat'),    sim_log.u_sat    = dbg.u_sat;    end
+if isfield(dbg,'u_margin'), sim_log.u_margin = dbg.u_margin; end
+if isfield(dbg,'qp_Ay'), sim_log.A_y = dbg.qp_Ay; end
 
 save('sim_log.mat','sim_log');
 
 %%
-%animate_planar_towing_traj(t, X, params, opts)
+animate_planar_towing_traj(t, X, params, opts)
 end
 
 % =========================================================
@@ -144,6 +154,11 @@ dbg.qp_h        = nan(numel(T),2);   % hitch pos error vector (y-yd)
 dbg.qp_hdot     = nan(numel(T),2);   % hitch vel error vector (ydot-ydot_d)
 dbg.qp_e_yddot  = nan(numel(T),2);   % accel error vector (yddot - yddot_des)  (preferred)
 
+dbg.u        = nan(numel(T),2);    % u actually applied at each grid time (pad)
+dbg.u_sat    = false(numel(T),2);  % [sat_F, sat_tau]
+dbg.u_margin = nan(numel(T),2);    % min distance to bounds for each inp
+dbg.qp_Ay = nan(numel(T), 2, 2);   % store A_y(t)
+
 for k = 1:numel(T)-1
     tk  = T(k);
     tk1 = T(k+1);
@@ -167,7 +182,27 @@ for k = 1:numel(T)-1
         %}
     u = [F_drive; tau_r];
     U(k,:) = u.';
+    if ~isempty(qp_dbg) && isstruct(qp_dbg) && isfield(qp_dbg,'lb') && isfield(qp_dbg,'ub') ...
+        && ~isempty(qp_dbg.lb) && ~isempty(qp_dbg.ub)
+    lb = double(qp_dbg.lb(:));
+    ub = double(qp_dbg.ub(:));
+    else
+    if isfield(params,'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
+    if isfield(params,'Taumax'), Taumax = params.Taumax; else, Taumax = 1e3; end
+    lb = [-Fmax; -Taumax];
+    ub = [ Fmax;  Taumax];
+    end
+    dbg.u(k+1,:) = u.';  % keep your k+1 alignment convention
 
+    % use relative threshold (more robust than exact equality)
+    Fmax_eff   = ub(1);
+    Taumax_eff = ub(2);
+    
+    dbg.u_sat(k+1,1) = abs(u(1)) >= 0.995*Fmax_eff;
+    dbg.u_sat(k+1,2) = abs(u(2)) >= 0.995*Taumax_eff;
+    
+    % distance to nearest bound (0 means exactly on bound)
+    dbg.u_margin(k+1,:) = min((u - lb).', (ub - u).');
     % --- extract qp rv/ra (numeric only; NaN if unavailable) ---
     [qp_rv_k, qp_ra_k, qp_exitflag_k, qp_condK_k] = extract_qp_residuals(x, u, params, qp_dbg);
     dbg.qp_rv(k+1)       = qp_rv_k;
@@ -193,16 +228,26 @@ for k = 1:numel(T)-1
         try, dbg.qp_yddot(k+1,:) = double(full(qp_dbg.yddot_opt(:))).'; end
     end
     end
-
+    if ~isempty(qp_dbg) && isstruct(qp_dbg)
+    if isfield(qp_dbg,'A_y') && ~isempty(qp_dbg.A_y)
+        dbg.qp_Ay(k+1,:,:) = double(full(qp_dbg.A_y));
+    end
+    end
     % --- integrate dynamics with u held constant ---
     dyn_full = towing_dynamic(x, params, 'full');
     f = @(tt,xx) dyn_full.xdot(u);
     [~, xseg] = ode45(f, [tk tk1], x, opts);
     x = xseg(end,:).';
+    
+    % --- project position/orientation to satisfy g(q)=0 (rigid hitch) ---
+    x = project_position_to_constraints(x, params);
 
     % --- project velocity to satisfy Jv=0 ---
     x = project_velocity_to_constraints(x, params);
-
+    % hard fail if NaN (do not hide bugs)
+    if any(~isfinite(x))
+    error('NaN/Inf after projection at step k=%d, t=%.6f', k, tk1);
+    end
     X(k+1,:) = x.';
 
     % --- log rv from current state ---
@@ -217,15 +262,16 @@ for k = 1:numel(T)-1
 
     p_hr = [ xr - d*cos(th);
              yr - d*sin(th) ];
-     Lt = params.Lt;
+    Lt = params.Lt;
     xt = x(7);
     yt = x(8);
     th = x(9);
-
+    %{
     p_ht = [ xt + (Lt/2)*cos(th);
              yt + (Lt/2)*sin(th) ];
     e_h  = norm(p_hr - p_ht);
     save('log.mat','e_h')
+    %}
 end
 end
 
@@ -245,6 +291,39 @@ v_corr = v - MinvJt * (K \ (J * v));
 
 x(4:6)   = v_corr(1:3);
 x(10:12) = v_corr(4:6);
+end
+
+function x = project_position_to_constraints(x, params)
+% project positions onto rigid hitch constraint manifold
+% enforces:
+%   1) hitch points coincide in x/y
+%   2) trailer yaw = robot yaw (rigid hitch orientation)
+
+% unpack
+d   = params.d;
+Lt  = params.Lt;
+
+xr  = x(1);  yr  = x(2);  thetar = x(3);
+
+% robot hitch position in world
+p_hr = [xr - d*cos(thetar);
+        yr - d*sin(thetar)];
+
+% enforce rigid hitch orientation: thetat = thetar
+x(9) = thetar;
+
+% set trailer com so that trailer hitch matches robot hitch exactly
+% trailer hitch: p_ht = [xt; yt] + (Lt/2)*[cos(thetat); sin(thetat)]
+xt = p_hr(1) - (Lt/2)*cos(thetar);
+yt = p_hr(2) - (Lt/2)*sin(thetar);
+
+x(7) = xt;
+x(8) = yt;
+
+% fail fast on bad numbers
+if any(~isfinite(x([1:3,7:9])))
+    error('non-finite state in position projection');
+end
 end
 
 function [rv, ra, exitflag, condK] = extract_qp_residuals(x, u, params, qp_dbg)

@@ -90,7 +90,7 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
         qp_dbg.yddot_opt= yddot_opt;
         qp_dbg.hddot    = hddot;
         qp_dbg.e_yddot  = yddot_opt - yddot_des;
-        
+
         a_opt = dyn.a(u_opt);   
 
         qp_dbg.u_opt   = u_opt;
@@ -110,8 +110,11 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
         qp_dbg.res_acc   = dyn.res_acc(u_opt);
         qp_dbg.res_vel   = dyn.res_vel();
         qp_dbg.condK     = dyn.condK();
-
-        
+        %track input bound
+       
+        qp_dbg.u_opt = u_opt;
+        qp_dbg.lb = lb;
+        qp_dbg.ub = ub;
         %{
         % keep your old fields for compatibility
         lambda_opt = zeros(3,1);

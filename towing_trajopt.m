@@ -1,7 +1,8 @@
 function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
-% towing_trajopt
+% towing_trajopt_tom1
 % multiple shooting TO for robot+trailer with RK4 dynamics
 % uses soft hitch-closure penalty (not equality)
+% adds running hitch velocity tracking term (finite-diff proxy)
 
     import casadi.*
 
@@ -11,8 +12,12 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     w = struct;
 
     % tracking weights (robot-side hitch -> ref hitch)
-    w.Qp_tr   = diag([10, 10]);      % running hitch tracking
-    w.Qp_tr_f = diag([50, 50]);      % terminal hitch tracking
+    w.Qp_tr   = diag([30, 30]);      % running hitch tracking
+    w.Qp_tr_f = diag([150, 150]);      % terminal hitch tracking
+
+    % hitch velocity tracking (finite difference proxy)
+    w.use_vel_track = true;
+    w.Qv_tr = 0.3 * w.Qp_tr;         % start small, tune later
 
     % hitch closure penalty weight
     if isfield(params,'w_hitch'), w.w_hitch = params.w_hitch; else, w.w_hitch = 1e3; end
@@ -25,8 +30,8 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     w.R = diag([0.1, 0.1]);
 
     % optional control smoothness
-    w.use_smooth = false;
-    w.S = diag([1.0, 1.0]);
+    w.use_smooth = true;
+    w.S = diag([1.0, 1.0]); 
 
     % optional robot position soft tracking (off by default)
     w.use_robot_track = false;
@@ -98,13 +103,24 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 
         % hitch tracking (robot hitch -> reference)
         p_ref_k = p_hitch_ref(:,k);
-        p_hr    = hitch_from_state(xk, params);
-        e_tr    = p_hr - p_ref_k;
+        p_hr_k  = hitch_from_state(xk, params);
+        e_tr    = p_hr_k - p_ref_k;
         obj     = obj + e_tr.' * w.Qp_tr * e_tr;
+
+        % hitch velocity tracking (finite-difference proxy)
+        if w.use_vel_track && k < N
+            p_hr_kp1 = hitch_from_state(X(:,k+1), params);
+            ydot_k = (p_hr_kp1 - p_hr_k) / dt;
+
+            ydot_ref_k = (p_hitch_ref(:,k+1) - p_hitch_ref(:,k)) / dt;
+            e_v = ydot_k - ydot_ref_k;
+
+            obj = obj + e_v.' * w.Qv_tr * e_v;
+        end
 
         % soft hitch closure penalty (robot hitch == trailer hitch)
         p_ht  = trailer_hitch_from_state(xk, params);
-        e_h   = p_hr - p_ht;
+        e_h   = p_hr_k - p_ht;
         obj   = obj + w.w_hitch * (e_h.'*e_h);
 
         % optional robot position track (off by default)
@@ -123,7 +139,13 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         phi_raw = xk(9) - xk(3);
         phi_k   = atan2(sin(phi_raw), cos(phi_raw));
         obj     = obj + w.w_phi * (phi_k^2);
-
+        % ---- phi rate penalty (dphi) to suppress trailer oscillation
+        if k > 1
+            phi_prev_raw = X(9,k-1) - X(3,k-1);
+            phi_prev = atan2(sin(phi_prev_raw), cos(phi_prev_raw));
+            dphi = (phi_k - phi_prev) / dt;
+            obj = obj + 0.2 * (dphi^2);   % 起步小：0.05~0.5
+        end
         % control effort
         obj = obj + uk.' * w.R * uk;
 
@@ -220,7 +242,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     u_sol = U_opt.';   % N x nu
 
     %% =========================
-    % 10) debug + cost monitors (post-eval, does not change solution)
+    % 10) debug + cost monitors (post-eval)
     % =========================
     to_dbg = struct;
     to_dbg.obj     = full(sol.f);
@@ -244,46 +266,48 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         p_hr_all(:,k) = hitch_from_state(x_sol(k,:).', params);
     end
 
-    % velocity weight for monitor only (you can change later)
-    Qv = w.Qp_tr;
+    Qv_mon = w.Qv_tr;
+    if isempty(Qv_mon)
+        Qv_mon = w.Qp_tr;
+    end
 
     for k = 1:N
         xk = x_sol(k,:).';
         uk = u_sol(k,:).';
 
-        % pos tracking term
+        % pos tracking monitor
         p_ref_k = p_hitch_ref(:,k);
         p_hr    = p_hr_all(:,k);
         e_tr    = p_hr - p_ref_k;
         J_pos(k)= full(e_tr.' * w.Qp_tr * e_tr);
 
-        % vel monitor (finite difference)
+        % vel monitor
         ydot_k     = (p_hr_all(:,k+1) - p_hr_all(:,k)) / dt;
         ydot_ref_k = (p_hitch_ref(:,k+1) - p_hitch_ref(:,k)) / dt;
         e_v        = ydot_k - ydot_ref_k;
-        J_vel(k)   = full(e_v.' * Qv * e_v);
+        J_vel(k)   = full(e_v.' * Qv_mon * e_v);
 
-        % yaw/phi penalty
+        % yaw/phi monitor
         phi_raw = xk(9) - xk(3);
         phi_k   = atan2(sin(phi_raw), cos(phi_raw));
         J_yaw(k)= full(w.w_phi * (phi_k^2));
 
-        % control effort
+        % control effort monitor
         J_u(k)  = full(uk.' * w.R * uk);
 
-        % hitch closure penalty
+        % hitch closure monitor
         p_ht = trailer_hitch_from_state(xk, params);
         e_h  = p_hr - p_ht;
         J_h(k)= full(w.w_hitch * (e_h.'*e_h));
 
-        % optional smoothness
+        % smoothness monitor
         if w.use_smooth && k > 1
             duk   = uk - u_sol(k-1,:).';
             J_sm(k)= full(duk.' * w.S * duk);
         end
     end
 
-    % terminal terms
+    % terminal monitors
     xN_num = x_sol(N+1,:).';
     p_hrN  = hitch_from_state(xN_num, params);
     eN     = p_hrN - p_hitch_ref(:,N+1);
@@ -299,7 +323,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 
     to_dbg.cost = struct;
     to_dbg.cost.J_pos = J_pos;
-    to_dbg.cost.J_vel = J_vel; % monitor only unless you add it to obj
+    to_dbg.cost.J_vel = J_vel;
     to_dbg.cost.J_u   = J_u;
     to_dbg.cost.J_yaw = J_yaw;
     to_dbg.cost.J_h   = J_h;
@@ -313,7 +337,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     to_dbg.cost.sum.yaw = sum(J_yaw) + J_yaw_f;
     to_dbg.cost.sum.h   = sum(J_h) + J_h_f;
     to_dbg.cost.sum.sm  = sum(J_sm);
-    to_dbg.cost.sum.total_like = to_dbg.cost.sum.pos + to_dbg.cost.sum.u + to_dbg.cost.sum.yaw + to_dbg.cost.sum.h + to_dbg.cost.sum.sm;
+    to_dbg.cost.sum.total_like = to_dbg.cost.sum.pos + to_dbg.cost.sum.vel + to_dbg.cost.sum.u + to_dbg.cost.sum.yaw + to_dbg.cost.sum.h + to_dbg.cost.sum.sm;
 
     % closure sanity check (meters)
     try
@@ -324,7 +348,7 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         e_h  = sqrt(sum((p_hr - p_ht).^2,2));
         to_dbg.hitch_err_max = max(e_h);
         to_dbg.hitch_err_rms = rms(e_h);
-        fprintf('to hitch closure (soft): max=%.3e m, rms=%.3e m\n', to_dbg.hitch_err_max, to_dbg.hitch_err_rms);
+        fprintf('tom1 hitch closure (soft): max=%.3e m, rms=%.3e m\n', to_dbg.hitch_err_max, to_dbg.hitch_err_rms);
     catch
     end
 end

@@ -9,7 +9,8 @@ params.Lr = 0.50;  params.Wr = 0.19;
 params.Lt = 0.514; params.Wt = 0.639;
 params.m_r = 12;   params.I_r = 5;
 params.m_t = 6.3;  params.I_t = 2;
-
+params.Fmax= 1e3
+params.Taumax= 1e3; 
 % Initial state
 params.x0 = zeros(12,1);   % [xr, yr, thetar, vxr, vyr, wr, xt, yt, thetat, vxt, vyt, wt]
 params.x0(1:3) = [0; 0; 0];  
@@ -39,7 +40,7 @@ y0=[-0.391;0]; %hitch's position
 ref_to = make_straight_ref(tspan, y0);
 save('ref_to.mat','ref_to');
 %% Get Past TO result to reuse Warning: delete TO_Output.mat for new ref path
-if isfile('TO_Output.mat')
+if ~isfile('TO_Output.mat')
     % load cached TO result
     S = load('TO_Output.mat', 'x_to', 'u_to', 'to_dbg');
     x_to   = S.x_to;
@@ -77,10 +78,10 @@ controller = @(x,t) qp_to_wrapper(x, t, params);
 
 % Run simulation
 simulate_planar_towing_full_dynamics(controller, tspan, params);
-load('TO_Output.mat','to_log');
+load('TO_Output.mat','to_log','to_dbg');
 load('sim_log.mat','sim_log');
 load('ref_to.mat','ref_to');
-analyze_towing_results(sim_log, to_log, ref_to, params);
+analyze_towing_results(sim_log, to_log, ref_to, params, to_dbg);
 function to_log = build_to_log(t_to, X_to, U_to, params)
 % build_to_log (minimal)
 % packs TO outputs into the same schema used by analysis
