@@ -4,9 +4,9 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
 %
 % dependency:
 %   dyn = towing_dynamic(x, params, 'task')
+    
 
     dyn = towing_dynamic(x, params, 'task');
-  
     y    = dyn.y;        % 2x1 hitch position
     ydot = dyn.ydot;     % 2x1 hitch velocity
     A_y  = dyn.A_y;      % 2x2, yddot = A_y*u + b_y
@@ -77,7 +77,7 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
 
     F_drive = u_opt(1);
     tau_r   = u_opt(2);
-
+    
     if nargout > 2
         a_opt = dyn.a(u_opt);   
 
@@ -99,6 +99,8 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
         qp_dbg.res_acc   = dyn.res_acc(u_opt);
         qp_dbg.res_vel   = dyn.res_vel();
         qp_dbg.condK     = dyn.condK();
+
+        
         %{
         % keep your old fields for compatibility
         lambda_opt = zeros(3,1);

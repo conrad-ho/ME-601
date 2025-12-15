@@ -37,24 +37,47 @@ dt_to  = tspan(2) - tspan(1);
 N_to   = numel(tspan) - 1; 
 y0=[xt0;yt0];
 ref_to = make_straight_ref(tspan, y0);
-save('log.mat','ref_to'); 
+save('ref_to.mat','ref_to');
+%% Get Past TO result to reuse Warning: delete TO_Output.mat for new ref path
+if ~isfile('TO_Output.mat')
+    % load cached TO result
+    S = load('TO_Output.mat', 'x_to', 'u_to', 'to_dbg');
+    x_to   = S.x_to;
+    u_to   = S.u_to;
+    to_dbg = S.to_dbg;
+else
+    % run TO and save for next time
+    [x_to, u_to, to_dbg] = towing_trajopt(dt_to, N_to, ref_to, params.x0, params);
 
-[x_to, u_to, to_dbg] = towing_trajopt(dt_to, N_to, ref_to, params.x0, params); %TO
-save('TO_Output','x_to', 'u_to', 'to_dbg');
+    % ---- build time grid for to ----
+    t_to = (0:N_to).' * dt_to;   % (N_to+1)x1
+    
+    % ---- normalize shapes to match build_to_log expectations ----
+    X_to = x_to;
+    if size(X_to,1) == 12 && size(X_to,2) == numel(t_to)
+        X_to = X_to.';           % 12x(N+1) -> (N+1)x12
+    end
+    
+    U_to = u_to;
+    if ~isempty(U_to) && size(U_to,2) ~= 2 && size(U_to,1) == 2
+        U_to = U_to.';           % 2xN -> Nx2
+    end
+    
+    % ---- build to_log for analysis ----
+    to_log = build_to_log(t_to, X_to, U_to, params);
+    
+    % ---- save everything ----
+    save('TO_Output.mat', 'x_to', 'u_to', 'to_dbg', 't_to', 'to_log');
+    end
+
+%%
 traj_to = build_to_qp_traj(dt_to, x_to, u_to, params);
 params.to_traj = traj_to;
 controller = @(x,t) qp_to_wrapper(x, t, params);
 
 % Run simulation
 simulate_planar_towing_full_dynamics(controller, tspan, params);
-
-% Force/Torque Input Function, not being used
-function [F, tau] = user_force_input(~,t)
-    % test: constant thrust, small steering pulse
-    F = 30;   % constant forward force
-    if t > 4 && t < 6
-        tau = 1;  % steering torque pulse
-    else
-        tau = 0;
-    end
-end
+load('TO_Output.mat','to_log');
+load('sim_log.mat','sim_log');
+load('ref_to.mat','ref_to');
+analyze_towing_results(sim, to, ref, params)

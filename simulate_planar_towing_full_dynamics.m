@@ -31,129 +31,145 @@ params.x0(10:12) = [0;0;0];
 
 % integrate
 opts = odeset('RelTol',1e-7,'AbsTol',1e-9);
-[t,X] = ode45(@(tt,xx) ode_rhs_new_interface(tt, xx, controller_handle, params), ...
-              tspan, params.x0, opts);
+dt_ctrl = 0.01;  % 100 Hz, might need to raise to 500Hz
+[t, X, U, dbg] = simulate_sample_hold_ode45(controller_handle, tspan, params.x0, params, dt_ctrl, opts);
 
-% diagnostics: hitch length check
-for k = 1:length(t)
-    xr = X(k,1); yr = X(k,2); thetar = X(k,3);
-    xt = X(k,7); yt = X(k,8); thetat = X(k,9);
-
-    r_rh = [xr; yr] - params.d*[cos(thetar); sin(thetar)];
-    r_th = [xt; yt] + (params.Lt/2)*[cos(thetat); sin(thetat)];
-
-    hitch_len = norm(r_rh - r_th);
-    fprintf('t=%.2f, hitch=%.4f\n', t(k), hitch_len);
-end
-
+%%
 % =========================================================
-% build log: t, X, trailer output y, and control input u
-% note: here y follows the trailer com (x_t, y_t), not the hitch
+% build minimal analysis log (no for-loops)
+% keeps: yaw, hitch error, paths, inputs, rv
 % =========================================================
-N = length(t);
-log = struct();
-log.t  = t;              % [N x 1]
-log.X  = X;              % [N x 12]
-log.yd = zeros(N,2);     % desired hitch position
-log.y  = zeros(N,2);     % actual trailer com position
-log.u  = zeros(N,2);     % control inputs [F_drive, tau_r]
 
-ref_state.mode = 'local_circle';
-ref_state.initialized = false;
+N  = numel(t);
 
-for k = 1:N
-    xk = X(k,:).';
-    tk = t(k);
+% state slices
+xr     = X(:,1);   yr     = X(:,2);   thetar = X(:,3);
+wr     = X(:,6);
+xt     = X(:,7);   yt     = X(:,8);   thetat = X(:,9);
 
-    xr     = xk(1);
-    yr     = xk(2);
-    thetar = xk(3);
-    d      = params.d;
+d  = params.d;
+Lt = params.Lt;
 
-    y_hitch = [xr - d*cos(thetar);
-               yr - d*sin(thetar)];
+% paths
+p_r  = [xr, yr];                      % robot com
+p_tr = [xt, yt];                      % trailer com
 
-    xt = xk(7);
-    yt = xk(8);
-    y_trailer = [xt; yt];
-    log.y(k,:) = y_trailer.';
+% hitch points (robot hitch and trailer hitch)
+p_h_r = [xr - d*cos(thetar),  yr - d*sin(thetar)];                 % robot-side hitch point
+p_h_t = [xt + (Lt/2)*cos(thetat), yt + (Lt/2)*sin(thetat)];        % trailer-side hitch point
 
-    [F_drive, tau_r] = controller_handle(xk, tk);
-    log.u(k,:) = [F_drive, tau_r];
+% hitch position error (should be ~0)
+e_h = sqrt(sum((p_h_r - p_h_t).^2, 2));    % [N x 1]
 
-    [yd_k, ~, ~, ref_state] = hitch_ref(tk, y_hitch, ref_state);
-    log.yd(k,:) = yd_k.';
+% inputs: U is (N-1)x2 from sample/hold; pad to N for plotting convenience
+if isempty(U)
+    U_pad = zeros(N,2);
+else
+    U_pad = [U; U(end,:)];                % [N x 2]
 end
 
-save('log.mat','log','-append')
+% pack log
+sim_log = struct();
+sim_log.t      = t(:);                    % [N x 1]
+sim_log.X      = X;                       % [N x 12]
+sim_log.U      = U_pad;                   % [N x 2]  (F_drive, tau_r)
+sim_log.theta  = thetar;                  % [N x 1]
+sim_log.wr     = wr;                      % [N x 1]
+sim_log.p_r    = p_r;                     % [N x 2]
+sim_log.p_tr   = p_tr;                    % [N x 2]
+sim_log.p_h_r  = p_h_r;                   % [N x 2]
+sim_log.p_h_t  = p_h_t;                   % [N x 2]
+sim_log.e_h    = e_h;                     % [N x 1]
+sim_log.rv     = dbg.rv(:);               % [N x 1]  (speed-level constraint residual)
 
-% visualization
-figure('Color','w'); hold on; grid on; axis equal;
-xlabel('X (m)'); ylabel('Y (m)');
-title('Planar Robot–Trailer Dynamics (Rigid Hitch)');
-xlim([-2 12]); ylim([-4 4]);
+save('sim_log.mat','sim_log');
+%%
 
-path_robot   = plot(NaN,NaN,'k-','LineWidth',1.2,'DisplayName','robot');
-path_trailer = plot(NaN,NaN,'k--','LineWidth',1.2,'DisplayName','trailer');
-
-robot_patch   = patch(NaN,NaN,'r','FaceAlpha',0.4,'EdgeColor','none');
-trailer_patch = patch(NaN,NaN,'b','FaceAlpha',0.4,'EdgeColor','none');
-
-legend('Location','best');
-
-idx_vec  = 1:5:length(t);
-Nsteps   = numel(idx_vec);
-traj_x_r = NaN(1, Nsteps); traj_y_r = NaN(1, Nsteps);
-traj_x_t = NaN(1, Nsteps); traj_y_t = NaN(1, Nsteps);
-
-kplot = 0;
-for i = idx_vec
-    kplot = kplot + 1;
-
-    xr = X(i,1); yr = X(i,2); thetar = X(i,3);
-    xt = X(i,7); yt = X(i,8); thetat = X(i,9);
-
-    traj_x_r(kplot) = xr; traj_y_r(kplot) = yr;
-    traj_x_t(kplot) = xt; traj_y_t(kplot) = yt;
-
-    set(path_robot,  'XData', traj_x_r(1:kplot), 'YData', traj_y_r(1:kplot));
-    set(path_trailer,'XData', traj_x_t(1:kplot), 'YData', traj_y_t(1:kplot));
-
-    set(robot_patch,'XData',rect_x(xr,params.Wr,params.Lr,thetar), ...
-                    'YData',rect_y(yr,params.Wr,params.Lr,thetar));
-    set(trailer_patch,'XData',rect_x(xt,params.Wt,params.Lt,thetat), ...
-                      'YData',rect_y(yt,params.Wt,params.Lt,thetat));
-
-    axis([xr-3 xr+5 yr-3 yr+3]);
-    drawnow;
+animate_planar_towing_traj(t, X, params, opts)
 end
-end
-
 % =========================================================
 % ODE RHS using unified towing_dynamic interface
 % =========================================================
-function dx = ode_rhs_new_interface(t, x, controller_handle, params)
-% x: 12x1, u: 2x1
-% dx = towing_dynamic(x, params, 'full').xdot(u)
+function [T, X, U, dbg] = simulate_sample_hold_ode45(controller_handle, tspan, x0, params, dt_ctrl, opts)
+% simulate with sample-and-hold control:
+% - solve controller once every dt_ctrl
+% - integrate dynamics with u held constant within each interval using ode45
+% - (optional) velocity projection each interval end (plan A)
 
-% controller input
-[F_drive, tau_r] = controller_handle(x, t);
-u = [F_drive; tau_r];
+    if nargin < 6 || isempty(opts)
+        opts = odeset('RelTol',1e-6,'AbsTol',1e-8);
+    end
 
-% unified dynamics
-dyn = towing_dynamic(x, params, 'full');
-dx  = dyn.xdot(u);
+    t0 = tspan(1);
+    tf = tspan(end);
+
+    % build control grid
+    N = ceil((tf - t0)/dt_ctrl);
+    t_grid = t0 + (0:N)*dt_ctrl;
+    t_grid(end) = tf;   % ensure ends exactly at tf
+
+    x = x0(:);
+
+    T = t_grid(:);
+    X = zeros(numel(T), numel(x));
+    U = zeros(numel(T)-1, 2);
+
+    X(1,:) = x.';
+
+    dbg = struct;
+    dbg.rv = zeros(numel(T),1);
+
+    for k = 1:numel(T)-1
+        tk = T(k);
+        tk1 = T(k+1);
+
+        % --- solve controller ONCE ---
+        [F_drive, tau_r] = controller_handle(x, tk);
+        u = [F_drive; tau_r];
+        U(k,:) = u.';
+
+        % --- integrate dynamics with u held constant ---
+        f = @(tt,xx) towing_dynamic(xx, params, 'full').xdot(u);
+        [~, xseg] = ode45(f, [tk tk1], x, opts);
+
+        x = xseg(end,:).';
+
+        % --- plan A: project velocity to satisfy Jv=0 ---
+        x = project_velocity_to_constraints(x, params);
+
+        X(k+1,:) = x.';
+
+        % --- log rv ---
+        dm = towing_dynamic(x, params, 'mats');
+        dbg.rv(k+1) = norm(dm.J * dm.v);
+    end
 end
+function x = project_velocity_to_constraints(x, params)
+% project_velocity_to_constraints
+% project generalized velocity v so that J*v = 0 (minimum correction in M-metric)
+%
+% state x: 12x1
+%   [xr; yr; thetar; vxr; vyr; wr;  xt; yt; thetat; vxt; vyt; wt]
+%
+% assumes towing_dynamic(x, params, 'mats') returns:
+%   dyn.M (6x6), dyn.J (3x6), dyn.v (6x1) = [vxr; vyr; wr; vxt; vyt; wt]
 
-% helpers
-function X = rect_x(xc,W,L,theta)
-R=[cos(theta) -sin(theta); sin(theta) cos(theta)];
-pts=0.5*[-L -W; L -W; L W; -L W]';
-X = R(1,:)*pts + xc;
-end
+    dyn = towing_dynamic(x, params, 'mats');
 
-function Y = rect_y(yc,W,L,theta)
-R=[cos(theta) -sin(theta); sin(theta) cos(theta)];
-pts=0.5*[-L -W; L -W; L W; -L W]';
-Y = R(2,:)*pts + yc;
+    M = dyn.M;
+    J = dyn.J;
+    v = dyn.v;
+
+    % solve MinvJt = M^{-1} J^T without forming inv(M)
+    MinvJt = M \ (J.');          % 6x3
+
+    % K = J M^{-1} J^T
+    K = J * MinvJt;              % 3x3
+
+    % velocity projection: v <- v - M^{-1}J^T K^{-1} (J v)
+    v_corr = v - MinvJt * (K \ (J * v));
+
+    % write back to x
+    x(4:6)   = v_corr(1:3);
+    x(10:12) = v_corr(4:6);
 end
