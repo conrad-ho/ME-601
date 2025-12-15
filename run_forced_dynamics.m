@@ -1,7 +1,7 @@
 clear; clc; close all;
 addpath('D:\casADi') %% the path of your casadi
 % Simulation parameters
-tspan = 0:0.02:30;
+tspan = 0:0.2:30;
 
 % Geometry and dynamics params
 params.d  = 0.134;
@@ -35,11 +35,11 @@ params.x0(10:12) = [0;0;0];              % trailer initially at rest
 %%initialize TO
 dt_to  = tspan(2) - tspan(1);
 N_to   = numel(tspan) - 1; 
-y0=[xt0;yt0];
+y0=[-0.391;0]; %hitch's position
 ref_to = make_straight_ref(tspan, y0);
 save('ref_to.mat','ref_to');
 %% Get Past TO result to reuse Warning: delete TO_Output.mat for new ref path
-if ~isfile('TO_Output.mat')
+if isfile('TO_Output.mat')
     % load cached TO result
     S = load('TO_Output.mat', 'x_to', 'u_to', 'to_dbg');
     x_to   = S.x_to;

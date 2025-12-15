@@ -79,9 +79,20 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
     tau_r   = u_opt(2);
     
     if nargout > 2
+        h     = (y - yd);                 % 2x1
+        hdot  = (ydot - ydot_d);          % 2x1
+        
+        yddot_opt = A_y*u_opt + b_y;      % 2x1  == actual hitch acceleration under u_opt
+        hddot = yddot_opt;                % 2x1  (optional: also store error vs desired below)
+        
+        qp_dbg.h        = h;
+        qp_dbg.hdot     = hdot;
+        qp_dbg.yddot_opt= yddot_opt;
+        qp_dbg.hddot    = hddot;
+        qp_dbg.e_yddot  = yddot_opt - yddot_des;
+        
         a_opt = dyn.a(u_opt);   
 
-        qp_dbg = struct;
         qp_dbg.u_opt   = u_opt;
         qp_dbg.exitflag= exitflag;
         qp_dbg.H       = Hqp;

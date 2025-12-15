@@ -1,12 +1,53 @@
 function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
 % towing_trajopt
-% basic multiple shooting trajectory optimization for a robot+trailer system.
-% trailer/hitch is the main tracking target, robot has weaker soft constraints.
+% multiple shooting TO for robot+trailer with RK4 dynamics
+% uses SOFT hitch-closure penalty (not equality) to avoid DOF lockup
 
     import casadi.*
 
-    % parse reference path (hitch path)
-    % preferred: ref_to.p_hitch, legacy: ref_to.p_tr
+    %% =========================
+    %  0) weights & switches (tune here first)
+    %  =========================
+    w = struct;
+
+    % tracking weights (robot-side hitch -> ref hitch)
+    w.Qp_tr   = diag([10, 10]);      % running hitch tracking
+    w.Qp_tr_f = diag([50, 50]);      % terminal hitch tracking
+
+    % hitch closure penalty weight (robot hitch == trailer hitch)  <-- key knob
+    % suggested continuation: start 1e3~1e4, then 1e5, then 1e6 if stable
+    if isfield(params,'w_hitch'), w.w_hitch = params.w_hitch; else, w.w_hitch = 1e3; end
+
+    % hitch angle penalty (phi = theta_t - theta_r)
+    w.w_phi   = 1.0;
+    w.w_phi_f = 5.0;
+
+    % control effort
+    w.R = diag([0.1, 0.1]);
+
+    % optional control smoothness
+    w.use_smooth = false;
+    w.S = diag([1.0, 1.0]);
+
+    % optional robot position soft tracking (currently off)
+    w.use_robot_track = false;
+    w.Qp_r = diag([1, 1]);
+    w.w_r  = 0.1;
+
+    % ipopt settings (debug-friendly defaults)
+    ip = struct;
+    ip.print_level = 3;
+    ip.acceptable_tol = 1e-6;
+    ip.acceptable_obj_change_tol = 1e-4;
+
+    % if you are getting "0 iterations" + weird dual infeasibility, force stricter behavior:
+    ip.use_strict = false;  % set true while debugging
+    ip.tol = 1e-8;
+    ip.acceptable_iter = 0;
+
+    %% =========================
+    %  1) parse reference path (hitch ref)
+    %  =========================
     if isfield(ref_to, 'p_hitch')
         p_hitch_ref = ref_to.p_hitch;   % 2 x (N+1)
     elseif isfield(ref_to, 'p_tr')
@@ -15,56 +56,51 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         error('ref_to must contain field p_hitch or p_tr (2 x (N+1)).');
     end
 
-    %% dimensions and bounds
-    nx = 12;    % [xr; yr; thetar; vxr; vyr; wr; xt; yt; thetat; vxt; vyt; wt]
-    nu = 2;     % u = [F; tau]
+    %% =========================
+    %  2) dimensions, bounds
+    %  =========================
+    nx = 12;
+    nu = 2;
 
-    % control bounds
     if isfield(params, 'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
     if isfield(params, 'Taumax'), Taumax = params.Taumax; else, Taumax = 1e3; end
     u_min = [-Fmax; -Taumax];
     u_max = [ Fmax;  Taumax];
 
-    % state bounds (keep loose first)
     x_min = -inf(nx,1);
     x_max =  inf(nx,1);
 
-    %% casadi symbols
+    %% =========================
+    %  3) casadi symbols + dynamics
+    %  =========================
     x_sym = SX.sym('x', nx, 1);
     u_sym = SX.sym('u', nu, 1);
 
-    % ================================
-    % new unified dynamics interface
-    % ================================
-    % expects: dyn_full.xdot(u) returns 12x1 state derivative [v; a(u)]
     dyn_full = towing_dynamic(x_sym, params, 'full');
     xdot_sym = dyn_full.xdot(u_sym);
-
-    % wrap into a casadi function for use in multiple shooting
     f_dyn = Function('f_dyn', {x_sym, u_sym}, {xdot_sym});
 
-    %% multiple shooting decision variables
+    % quick sanity check: is (x0, u=0) an equilibrium?
+    try
+        f0 = full(f_dyn(x0(:), [0;0]));
+        fprintf('||f(x0,0)|| = %.3e\n', norm(f0));
+    catch
+        % ignore if x0 not numeric during build
+    end
+
+    %% =========================
+    %  4) decision variables
+    %  =========================
     X = SX.sym('X', nx, N+1);
     U = SX.sym('U', nu, N);
 
-    %% weights
-    Qp_tr   = diag([10, 10]);     % hitch tracking (running)
-    Qp_tr_f = diag([50, 50]);     % hitch tracking (terminal)
-
-    Qp_r = diag([1, 1]);          % robot soft tracking (unused for now)
-    w_r  = 0.1;
-
-    w_phi   = 1.0;                % running hitch angle penalty
-    w_phi_f = 5.0;                % terminal hitch angle penalty
-
-    R = diag([0.1, 0.1]);         % control effort
-    S = diag([1.0, 1.0]);         % control smoothness (unused for now)
-
-    %% objective and constraints
+    %% =========================
+    %  5) objective + constraints
+    %  =========================
     obj = 0;
     g   = [];
 
-    % initial condition
+    % initial condition (hard)
     g = [g; X(:,1) - x0(:)];
 
     for k = 1:N
@@ -72,75 +108,101 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
         uk  = U(:,k);
         xkp = X(:,k+1);
 
-        % euler integration constraint
-        fk = f_dyn(xk, uk);
-        g  = [g; xkp - (xk + dt * fk)];
+        % ---- RK4 multiple shooting constraint (hard)
+        k1 = f_dyn(xk, uk);
+        k2 = f_dyn(xk + (dt/2)*k1, uk);
+        k3 = f_dyn(xk + (dt/2)*k2, uk);
+        k4 = f_dyn(xk + dt*k3, uk);
+        xk_next = xk + (dt/6)*(k1 + 2*k2 + 2*k3 + k4);
+        g = [g; xkp - xk_next];
 
-        % hitch position tracking
+        % ---- hitch tracking (robot hitch -> reference)
         p_ref_k = p_hitch_ref(:,k);
-        p_k     = hitch_from_state(xk, params);
-        e       = p_k - p_ref_k;
-        obj     = obj + e.' * Qp_tr * e;
+        p_hr    = hitch_from_state(xk, params);
+        e_tr    = p_hr - p_ref_k;
+        obj     = obj + e_tr.' * w.Qp_tr * e_tr;
 
-        % robot soft reference (kept as placeholder, still commented)
-        %{
-        if isfield(ref_to, 'p_r')
-            p_r_ref_k = ref_to.p_r(:,k);
-        else
-            p_r_ref_k = p_ref_k;
+        % ---- SOFT hitch closure penalty (robot hitch == trailer hitch)
+        p_ht  = trailer_hitch_from_state(xk, params);
+        e_h   = p_hr - p_ht;
+        obj   = obj + w.w_hitch * (e_h.'*e_h);
+
+        % ---- optional robot position track (off by default)
+        if w.use_robot_track
+            if isfield(ref_to, 'p_r')
+                p_r_ref_k = ref_to.p_r(:,k);
+            else
+                p_r_ref_k = p_ref_k;
+            end
+            p_r_k = robot_pos_from_state(xk);
+            e_r   = p_r_k - p_r_ref_k;
+            obj   = obj + w.w_r * (e_r.' * w.Qp_r * e_r);
         end
-        p_r_k = robot_pos_from_state(xk);
-        e_r   = p_r_k - p_r_ref_k;
-        obj   = obj + w_r * (e_r.' * Qp_r * e_r);
-        %}
 
-        % hitch angle penalty
-        phi_k = hitch_angle_from_state(xk);
-        obj   = obj + w_phi * (phi_k^2);
+        % ---- hitch angle penalty (wrapped)
+        phi_raw = xk(9) - xk(3);
+        phi_k   = atan2(sin(phi_raw), cos(phi_raw));
+        obj     = obj + w.w_phi * (phi_k^2);
 
-        % control effort
-        obj = obj + uk.' * R * uk;
+        % ---- control effort
+        obj = obj + uk.' * w.R * uk;
 
-        % control smoothness (optional)
-        %{
-        if k > 1
+        % ---- optional smoothness
+        if w.use_smooth && k > 1
             duk = uk - U(:,k-1);
-            obj = obj + duk.' * S * duk;
+            obj = obj + duk.' * w.S * duk;
         end
-        %}
     end
 
-    % terminal cost
+    % terminal cost (tracking + phi) + optional closure penalty at terminal
     xN = X(:,N+1);
 
     p_ref_N = p_hitch_ref(:,N+1);
-    p_N     = hitch_from_state(xN, params);
-    eN      = p_N - p_ref_N;
-    obj     = obj + eN.' * Qp_tr_f * eN;
+    p_hrN   = hitch_from_state(xN, params);
+    eN      = p_hrN - p_ref_N;
+    obj     = obj + eN.' * w.Qp_tr_f * eN;
 
-    phi_N   = hitch_angle_from_state(xN);
-    obj     = obj + w_phi_f * (phi_N^2);
+    phi_rawN = xN(9) - xN(3);
+    phi_N    = atan2(sin(phi_rawN), cos(phi_rawN));
+    obj      = obj + w.w_phi_f * (phi_N^2);
 
-    %% pack nlp
+    % terminal closure penalty (soft; safe to include)
+    p_htN = trailer_hitch_from_state(xN, params);
+    e_hN  = p_hrN - p_htN;
+    obj   = obj + w.w_hitch * (e_hN.'*e_hN);
+
+    %% =========================
+    %  6) pack NLP
+    %  =========================
     OPT_vars = [reshape(X, nx*(N+1), 1);
                 reshape(U, nu*N, 1)];
-
     nlp = struct('x', OPT_vars, 'f', obj, 'g', g);
 
     opts = struct;
-    opts.ipopt.print_level = 3;
+    opts.ipopt.print_level = ip.print_level;
     opts.print_time = 0;
-    opts.ipopt.acceptable_tol = 1e-6;
-    opts.ipopt.acceptable_obj_change_tol = 1e-4;
+    opts.ipopt.acceptable_tol = ip.acceptable_tol;
+    opts.ipopt.acceptable_obj_change_tol = ip.acceptable_obj_change_tol;
+
+    opts.ipopt.print_level = 5;          % 5 会打印每次迭代的表
+    opts.ipopt.sb = 'yes';               % 更干净的输出（可选）
+    opts.ipopt.max_iter = 5000;          % 防止卡死
+    opts.ipopt.mu_strategy = 'adaptive'; % 通常更稳
+    
+    if ip.use_strict
+        opts.ipopt.tol = ip.tol;
+        opts.ipopt.acceptable_iter = ip.acceptable_iter;
+    end
 
     solver = nlpsol('solver', 'ipopt', nlp, opts);
 
-    %% bounds on constraints (all equalities)
-    ng  = nx*(N+1);
+    %% =========================
+    %  7) bounds
+    %  =========================
+    ng  = numel(g);
     lbg = zeros(ng,1);
     ubg = zeros(ng,1);
 
-    %% bounds on variables
     nX = nx*(N+1);
     nU = nu*N;
 
@@ -153,13 +215,30 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     lbx(nX+1:nX+nU) = repmat(u_min, N, 1);
     ubx(nX+1:nX+nU) = repmat(u_max, N, 1);
 
-    %% initial guess
-    X_init  = repmat(x0(:), 1, N+1);
-    U_init  = zeros(nu, N);
+    %% =========================
+    %  8) initial guess (better than constant if ref moves)
+    %  =========================
+    X_init = repmat(x0(:), 1, N+1);
+    U_init = zeros(nu, N);
+
+    % optional: seed robot hitch position to follow ref in position only (helps convergence)
+    % (keeps angles/velocities from x0)
+    try
+        for k = 1:(N+1)
+            th = X_init(3,k);
+            X_init(1,k) = p_hitch_ref(1,k) + params.d*cos(th);
+            X_init(2,k) = p_hitch_ref(2,k) + params.d*sin(th);
+        end
+    catch
+        % ignore if params.d missing etc
+    end
+
     x0_guess = [reshape(X_init, nX, 1);
                 reshape(U_init, nU, 1)];
 
-    %% solve
+    %% =========================
+    %  9) solve
+    %  =========================
     sol = solver('x0', x0_guess, ...
                  'lbx', lbx, 'ubx', ubx, ...
                  'lbg', lbg, 'ubg', ubg);
@@ -176,6 +255,19 @@ function [x_sol, u_sol, to_dbg] = towing_trajopt(dt, N, ref_to, x0, params)
     to_dbg.obj     = full(sol.f);
     to_dbg.sol_vec = sol_vec;
     to_dbg.stats   = solver.stats();
+
+    % post-check: closure error (for sanity)
+    try
+        xr = x_sol(:,1); yr = x_sol(:,2); thr = x_sol(:,3);
+        xt = x_sol(:,7); yt = x_sol(:,8); tht = x_sol(:,9);
+        p_hr = [xr - params.d*cos(thr), yr - params.d*sin(thr)];
+        p_ht = [xt + (params.Lt/2)*cos(tht), yt + (params.Lt/2)*sin(tht)];
+        e_h  = sqrt(sum((p_hr - p_ht).^2,2));
+        to_dbg.hitch_err_max = max(e_h);
+        to_dbg.hitch_err_rms = rms(e_h);
+        fprintf('TO hitch closure (soft): max=%.3e, rms=%.3e\n', to_dbg.hitch_err_max, to_dbg.hitch_err_rms);
+    catch
+    end
 end
 
 %% ===== helper functions =====
@@ -193,8 +285,9 @@ function p_r = robot_pos_from_state(x)
     p_r = [xr; yr];
 end
 
-function phi = hitch_angle_from_state(x)
-    theta_r = x(3);
-    theta_t = x(9);
-    phi = theta_t - theta_r;
+function p_ht = trailer_hitch_from_state(x, params)
+    Lt = params.Lt;
+    xt = x(7);  yt = x(8);  thetat = x(9);
+    p_ht = [xt + (Lt/2)*cos(thetat);
+            yt + (Lt/2)*sin(thetat)];
 end

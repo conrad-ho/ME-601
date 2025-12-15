@@ -74,7 +74,7 @@ function animate_planar_towing_traj(t, X, params, opts)
         dbg_norm_hddot = NaN(size(dbg_idx));
     end
 
-
+    
     figure('Color','w'); hold on; grid on; axis equal;
     xlabel('X (m)'); ylabel('Y (m)');
     title('Planar Robot–Trailer Dynamics (Rigid Hitch)');
@@ -119,32 +119,7 @@ function animate_planar_towing_traj(t, X, params, opts)
             pad = opts.axis_pad;
             axis([xr-pad(1) xr+pad(2) yr-pad(3) yr+pad(4)]);
         end
-        
-                % update debug plots (if provided)
-        if has_dbg
-            % sync dbg using same i index (assumes aligned with t)
-            % if not aligned, replace this with nearest-time lookup
-            if i <= numel(t_dbg)
-                % decimation index bookkeeping
-                dbg_k = dbg_k + 1;
-                if mod(dbg_k-1, opts.dbg_stride) == 0
-                    jj = (dbg_k-1)/opts.dbg_stride + 1;
-                    dbg_norm_h(jj)    = norm(h_mat(i,:).');
-                    dbg_norm_hdot(jj) = norm(hdot_mat(i,:).');
 
-                    if ~isempty(hddot_mat)
-                        dbg_norm_hddot(jj) = norm(hddot_mat(i,:).');
-                    end
-
-                    set(lh1,'XData', t_dbg(dbg_idx(1:jj)), 'YData', dbg_norm_h(1:jj));
-                    set(lh2,'XData', t_dbg(dbg_idx(1:jj)), 'YData', dbg_norm_hdot(1:jj));
-                    if ~isempty(hddot_mat)
-                        set(lh3,'XData', t_dbg(dbg_idx(1:jj)), 'YData', dbg_norm_hddot(1:jj));
-                    end
-                end
-            end
-        end
-        
         drawnow;
     end
 end

@@ -85,7 +85,88 @@ function analyze_towing_results(sim, to, ref, params)
     legend({'to hitch overlap (constraint)', 'sim hitch overlap (constraint)', ...
             'to hitch tracking (vs ref)',     'sim hitch tracking (vs ref)'}, ...
             'Location','best');
+        % ---------------- figure 4: qp hitch monitors (h/hdot/hddot) ----------------
+    % expects (optional) fields:
+    %   sim.qp_h [N x 2], sim.qp_hdot [N x 2], sim.qp_e_yddot [N x 2] (or sim.qp_yddot)
+    %   to.qp_h  [N x 2], to.qp_hdot  [N x 2], to.qp_e_yddot  [N x 2] (or to.qp_yddot)
 
+    has_sim_h    = isfield(sim,'qp_h')       && ~isempty(sim.qp_h);
+    has_sim_hdot = isfield(sim,'qp_hdot')    && ~isempty(sim.qp_hdot);
+    has_sim_ea   = isfield(sim,'qp_e_yddot') && ~isempty(sim.qp_e_yddot);
+    has_sim_ya   = isfield(sim,'qp_yddot')   && ~isempty(sim.qp_yddot);
+
+    has_to_h     = isfield(to,'qp_h')        && ~isempty(to.qp_h);
+    has_to_hdot  = isfield(to,'qp_hdot')     && ~isempty(to.qp_hdot);
+    has_to_ea    = isfield(to,'qp_e_yddot')  && ~isempty(to.qp_e_yddot);
+    has_to_ya    = isfield(to,'qp_yddot')    && ~isempty(to.qp_yddot);
+
+    if has_sim_h || has_sim_hdot || has_sim_ea || has_sim_ya || has_to_h || has_to_hdot || has_to_ea || has_to_ya
+        figure('Color','w');
+        tiledlayout(3,1,'Padding','compact','TileSpacing','compact');
+
+        % --- (1) ||h|| ---
+        nexttile; grid on; hold on;
+        title('qp monitor: ||h|| (h = y - y_d)');
+        xlabel('t (s)'); ylabel('||h||');
+
+        if has_to_h
+            plot(to.t, sqrt(sum(to.qp_h.^2,2)), 'b-', 'LineWidth',1.1);
+        end
+        if has_sim_h
+            plot(sim.t, sqrt(sum(sim.qp_h.^2,2)), 'r-', 'LineWidth',1.3);
+        end
+        legend_entries = {};
+        if has_to_h,  legend_entries{end+1}  = 'to ||h||';  end
+        if has_sim_h, legend_entries{end+1}  = 'sim ||h||'; end
+        if ~isempty(legend_entries), legend(legend_entries,'Location','best'); end
+
+        % --- (2) ||hdot|| ---
+        nexttile; grid on; hold on;
+        title('qp monitor: ||hdot|| (hdot = ydot - ydot_d)');
+        xlabel('t (s)'); ylabel('||hdot||');
+
+        if has_to_hdot
+            plot(to.t, sqrt(sum(to.qp_hdot.^2,2)), 'b-', 'LineWidth',1.1);
+        end
+        if has_sim_hdot
+            plot(sim.t, sqrt(sum(sim.qp_hdot.^2,2)), 'r-', 'LineWidth',1.3);
+        end
+        legend_entries = {};
+        if has_to_hdot,  legend_entries{end+1}  = 'to ||hdot||';  end
+        if has_sim_hdot, legend_entries{end+1}  = 'sim ||hdot||'; end
+        if ~isempty(legend_entries), legend(legend_entries,'Location','best'); end
+
+        % --- (3) ||e_yddot|| preferred, else ||yddot|| ---
+        nexttile; grid on; hold on;
+        if (has_to_ea || has_sim_ea)
+            title('qp monitor: ||e_{yddot}|| (e = yddot - yddot_{des})');
+            ylabel('||e_{yddot}||');
+            if has_to_ea
+                plot(to.t, sqrt(sum(to.qp_e_yddot.^2,2)), 'b-', 'LineWidth',1.1);
+            end
+            if has_sim_ea
+                plot(sim.t, sqrt(sum(sim.qp_e_yddot.^2,2)), 'r-', 'LineWidth',1.3);
+            end
+            legend_entries = {};
+            if has_to_ea,  legend_entries{end+1}  = 'to ||e_{yddot}||';  end
+            if has_sim_ea, legend_entries{end+1}  = 'sim ||e_{yddot}||'; end
+        else
+            title('qp monitor: ||yddot|| (actual)');
+            ylabel('||yddot||');
+            if has_to_ya
+                plot(to.t, sqrt(sum(to.qp_yddot.^2,2)), 'b-', 'LineWidth',1.1);
+            end
+            if has_sim_ya
+                plot(sim.t, sqrt(sum(sim.qp_yddot.^2,2)), 'r-', 'LineWidth',1.3);
+            end
+            legend_entries = {};
+            if has_to_ya,  legend_entries{end+1}  = 'to ||yddot||';  end
+            if has_sim_ya, legend_entries{end+1}  = 'sim ||yddot||'; end
+        end
+        xlabel('t (s)');
+        if ~isempty(legend_entries), legend(legend_entries,'Location','best'); end
+    end
+    
     % ---------------- optional: rv if available ----------------
     if isfield(sim,'rv') && ~isempty(sim.rv)
         figure('Color','w'); grid on; hold on;

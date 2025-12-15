@@ -90,16 +90,11 @@ if isfield(dbg,'qp_rv'), sim_log.qp_rv = dbg.qp_rv(:); else, sim_log.qp_rv = nan
 if isfield(dbg,'qp_ra'), sim_log.qp_ra = dbg.qp_ra(:); else, sim_log.qp_ra = nan(N,1); end
 if isfield(dbg,'qp_exitflag'), sim_log.qp_exitflag = dbg.qp_exitflag(:); else, sim_log.qp_exitflag = nan(N,1); end
 if isfield(dbg,'qp_condK'), sim_log.qp_condK = dbg.qp_condK(:); else, sim_log.qp_condK = nan(N,1); end
-% qp hitch monitors (vector signals)
-if isfield(dbg,'qp_h'),       sim_log.qp_h       = dbg.qp_h;        end
-if isfield(dbg,'qp_hdot'),    sim_log.qp_hdot    = dbg.qp_hdot;     end
-if isfield(dbg,'qp_e_yddot'), sim_log.qp_e_yddot = dbg.qp_e_yddot;  end
-if isfield(dbg,'qp_yddot'),   sim_log.qp_yddot   = dbg.qp_yddot;    end
 
 save('sim_log.mat','sim_log');
 
 %%
-%animate_planar_towing_traj(t, X, params, opts)
+animate_planar_towing_traj(t, X, params, opts)
 end
 
 % =========================================================
@@ -140,31 +135,18 @@ dbg.qp_ra       = nan(numel(T),1);
 dbg.qp_exitflag = nan(numel(T),1);
 dbg.qp_condK    = nan(numel(T),1);
 
-dbg.qp_h        = nan(numel(T),2);   % hitch pos error vector (y-yd)
-dbg.qp_hdot     = nan(numel(T),2);   % hitch vel error vector (ydot-ydot_d)
-dbg.qp_e_yddot  = nan(numel(T),2);   % accel error vector (yddot - yddot_des)  (preferred)
-
 for k = 1:numel(T)-1
     tk  = T(k);
     tk1 = T(k+1);
 
     % --- solve controller ONCE (support optional qp_dbg) ---
-    F_drive = 0; tau_r = 0; qp_dbg = [];  % safe defaults every step
-    %try
-        % try 3-output signature first
+    qp_dbg = [];  % default empty
+    try
         [F_drive, tau_r, qp_dbg] = controller_handle(x, tk);
-        %{
     catch
-        try
-            % fallback: 2-output signature
-            [F_drive, tau_r] = controller_handle(x, tk);
-            qp_dbg = [];
-        catch
-            % keep defaults if controller fails
-            qp_dbg = [];
-        end
+        [F_drive, tau_r] = controller_handle(x, tk);
     end
-        %}
+
     u = [F_drive; tau_r];
     U(k,:) = u.';
 
@@ -174,25 +156,6 @@ for k = 1:numel(T)-1
     dbg.qp_ra(k+1)       = qp_ra_k;
     dbg.qp_exitflag(k+1) = qp_exitflag_k;
     dbg.qp_condK(k+1)    = qp_condK_k;
-    
-    if ~isempty(qp_dbg) && isstruct(qp_dbg)
-    if isfield(qp_dbg,'h') && ~isempty(qp_dbg.h)
-        try, dbg.qp_h(k+1,:) = double(full(qp_dbg.h(:))).'; end
-    end
-    if isfield(qp_dbg,'hdot') && ~isempty(qp_dbg.hdot)
-        try, dbg.qp_hdot(k+1,:) = double(full(qp_dbg.hdot(:))).'; end
-    end
-
-    % prefer accel error if you stored it as qp_dbg.e_yddot in controller
-    if isfield(qp_dbg,'e_yddot') && ~isempty(qp_dbg.e_yddot)
-        try, dbg.qp_e_yddot(k+1,:) = double(full(qp_dbg.e_yddot(:))).'; end
-    end
-
-    % optional: store actual yddot
-    if isfield(qp_dbg,'yddot_opt') && ~isempty(qp_dbg.yddot_opt)
-        try, dbg.qp_yddot(k+1,:) = double(full(qp_dbg.yddot_opt(:))).'; end
-    end
-    end
 
     % --- integrate dynamics with u held constant ---
     dyn_full = towing_dynamic(x, params, 'full');
@@ -210,20 +173,8 @@ for k = 1:numel(T)-1
     dbg.rv(k+1) = double(norm(full(dm.J * dm.v)));
 
     %=== testing, remove at will
-    d  = params.d;
-    xr = x(1);
-    yr = x(2);
-    th = x(3);
-
-    p_hr = [ xr - d*cos(th);
-             yr - d*sin(th) ];
-     Lt = params.Lt;
-    xt = x(7);
-    yt = x(8);
-    th = x(9);
-
-    p_ht = [ xt + (Lt/2)*cos(th);
-             yt + (Lt/2)*sin(th) ];
+    p_hr = robot_hitch(x);
+    p_ht = trailer_hitch(x);
     e_h  = norm(p_hr - p_ht);
     save('log.mat','e_h')
 end
@@ -307,6 +258,7 @@ if isnan(ra)
         ra = NaN;
     end
 end
+
 
 
 
