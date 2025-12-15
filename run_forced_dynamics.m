@@ -3,14 +3,19 @@ addpath('D:\casADi') %% the path of your casadi
 % Simulation parameters
 tspan = 0:0.2:30;
 
+% enable baumgarte stabilization (holonomic hitch rows only)
+params.baumgarte = true;
+params.alpha = 20;
+params.beta  = 20;
+
 % Geometry and dynamics params
 params.d  = 0.134;
 params.Lr = 0.50;  params.Wr = 0.19;
 params.Lt = 0.514; params.Wt = 0.639;
 params.m_r = 12;   params.I_r = 5;
 params.m_t = 6.3;  params.I_t = 2;
-params.Fmax= 1e3
-params.Taumax= 1e3; 
+params.Fmax= 1e3;
+params.Taumax= 2e3; 
 % Initial state
 params.x0 = zeros(12,1);   % [xr, yr, thetar, vxr, vyr, wr, xt, yt, thetat, vxt, vyt, wt]
 params.x0(1:3) = [0; 0; 0];  
@@ -40,7 +45,7 @@ y0=[-0.391;0]; %hitch's position
 ref_to = make_straight_ref(tspan, y0);
 save('ref_to.mat','ref_to');
 %% Get Past TO result to reuse Warning: delete TO_Output.mat for new ref path
-if ~isfile('TO_Output.mat')
+if isfile('TO_Output.mat')
     % load cached TO result
     S = load('TO_Output.mat', 'x_to', 'u_to', 'to_dbg');
     x_to   = S.x_to;

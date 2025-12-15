@@ -47,7 +47,7 @@ using in QP:
     dyn.v = m.v;
     dyn.H = m.H;
     dyn.g_h = m.g_h;
-
+    
     dyn.J_y = m.J_y;
     dyn.Jdot_y_v = m.Jdot_y_v;
 
@@ -73,52 +73,12 @@ using in QP:
 
     K = J * MinvJt;        % 3x3
     dyn.K = K;
-    solveK = @(rhs) (K \ rhs);
-    if ~isa(K,'casadi.SX') && ~isa(K,'casadi.MX')
-        solveK = @(rhs) (pinv(K) * rhs);
-    end
-    dyn.P_u = MinvB - MinvJt * solveK(J * MinvB);   % 6x2
+
+    dyn.P_u = MinvB - MinvJt * (K \ (J * MinvB));   % 6x2
 
     term0 = -J * MinvH + dotJ * v;                  % 3x1
+    dyn.p0 = -MinvH - MinvJt * (K \ term0);          % 6x1
 
-    % --- baumgarte stabilization for holonomic hitch only (rows 1:2) ---
-    if isfield(params,'baumgarte') && params.baumgarte
-    
-        % gains (define BEFORE any print)
-        if isfield(params,'alpha'), alpha = params.alpha; else, alpha = 20; end
-        if isfield(params,'beta'),  beta  = params.beta;  else, beta  = 20; end
-    
-        % g = hitch position mismatch, gdot = J_h v
-        g_h    = dyn.g_h;        % 2x1
-        gdot_h = J(1:2,:) * v;   % 2x1
-    
-        % enforce: J_h a + dotJ_h v = -2*alpha*gdot - beta^2*g
-        % our term0 corresponds to (dotJ*v - J*MinvH); modify holonomic rows only
-        term0(1:2) = term0(1:2) + 2*alpha*gdot_h + (beta^2)*g_h;
-    
-        % optional one-time print (safe, no "k")
-        persistent printed_bg
-        if isempty(printed_bg), printed_bg = false; end
-        if ~printed_bg
-            fprintf('[baumgarte] enabled=1 alpha=%.3g beta=%.3g ||g||=%.3e ||gdot||=%.3e\n', ...
-                alpha, beta, norm(full(g_h)), norm(full(gdot_h)));
-            printed_bg = true;
-        end
-    end
-
-% now compute p0 USING the modified term0
-    if ~isa(term0,'casadi.SX') && ~isa(term0,'casadi.MX')
-    if any(~isfinite(term0))
-        error('towing_dynamic: term0 has NaN/Inf (t=%g). state may have blown up.', ...
-              double(x(1)*0 + 0)); % 不依赖 t 的话就别打印
-    end
-    end
-    dyn.p0  = -MinvH - MinvJt * solveK(term0);      % 6x1
-    if ~isa(dyn.p0,'casadi.SX') && ~isa(dyn.p0,'casadi.MX')
-    if any(~isfinite(dyn.p0))
-        error('towing_dynamic: p0 became NaN/Inf -> K solve exploded');
-    end
-    end
     dyn.a = @(u) dyn.P_u * u + dyn.p0;
 
     % debugging helpers

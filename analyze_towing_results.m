@@ -314,4 +314,23 @@ end
         xlabel('t (s)'); ylabel('rv');
         plot(sim_log.t, sim_log.rv, 'r-', 'LineWidth',1.3);
     end
+    %%%%%
+    fprintf('\n[sim] qp exitflag: good=%d / %d\n', sum(sim_log.qp_exitflag==1), numel(sim_log.qp_exitflag));
+
+    figure('Color','w'); grid on; hold on;
+    title('qp exitflag (sim)'); xlabel('t'); ylabel('exitflag');
+    plot(sim_log.t, sim_log.qp_exitflag, 'LineWidth',1.2);
+    
+    figure('Color','w'); grid on; hold on;
+    title('inputs u (sim)'); xlabel('t'); ylabel('u');
+    plot(sim_log.t, sim_log.U(:,1), 'LineWidth',1.2);
+    plot(sim_log.t, sim_log.U(:,2), 'LineWidth',1.2);
+    legend({'F','tau'},'Location','best');
+    
+    figure('Color','w'); grid on; hold on;
+    title('||h|| and ||hdot|| (sim)'); xlabel('t'); ylabel('norm');
+    plot(sim_log.t, vecnorm(sim_log.qp_h,2,2), 'LineWidth',1.2);
+    plot(sim_log.t, vecnorm(sim_log.qp_hdot,2,2), 'LineWidth',1.2);
+    legend({'||h||','||hdot||'},'Location','best');
+
 end

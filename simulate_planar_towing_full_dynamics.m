@@ -118,11 +118,13 @@ end
 function [T, X, U, dbg] = simulate_sample_hold_ode45(controller_handle, tspan, x0, params, dt_ctrl, opts)
 % simulate with sample-and-hold control:
 % - solve controller once every dt_ctrl
-% - integrate dynamics with u held constant within each interval using ode45
-% - project velocity at interval end so that Jv=0
+% - integrate dynamics with u held constant within each interval
+% - use fixed-step semi-implicit euler + per-substep position/velocity projection (dae-style)
+%
+% comments intentionally lower-case
 
 if nargin < 6 || isempty(opts)
-    opts = odeset('RelTol',1e-6,'AbsTol',1e-8);
+    opts = odeset('RelTol',1e-6,'AbsTol',1e-8); %#ok<NASGU> % kept for interface compatibility
 end
 
 t0 = tspan(1);
@@ -152,128 +154,126 @@ dbg.qp_condK    = nan(numel(T),1);
 
 dbg.qp_h        = nan(numel(T),2);   % hitch pos error vector (y-yd)
 dbg.qp_hdot     = nan(numel(T),2);   % hitch vel error vector (ydot-ydot_d)
-dbg.qp_e_yddot  = nan(numel(T),2);   % accel error vector (yddot - yddot_des)  (preferred)
+dbg.qp_e_yddot  = nan(numel(T),2);   % accel error vector (yddot - yddot_des)
+dbg.qp_yddot    = nan(numel(T),2);   % optional actual yddot
 
-dbg.u        = nan(numel(T),2);    % u actually applied at each grid time (pad)
-dbg.u_sat    = false(numel(T),2);  % [sat_F, sat_tau]
-dbg.u_margin = nan(numel(T),2);    % min distance to bounds for each inp
-dbg.qp_Ay = nan(numel(T), 2, 2);   % store A_y(t)
+dbg.u        = nan(numel(T),2);      % u actually applied at each grid time (pad)
+dbg.u_sat    = false(numel(T),2);    % [sat_F, sat_tau]
+dbg.u_margin = nan(numel(T),2);      % min distance to bounds for each inp
+dbg.qp_Ay    = nan(numel(T),2,2);    % store A_y(t)
 
 for k = 1:numel(T)-1
     tk  = T(k);
     tk1 = T(k+1);
 
-    % --- solve controller ONCE (support optional qp_dbg) ---
-    F_drive = 0; tau_r = 0; qp_dbg = [];  % safe defaults every step
-    %try
-        % try 3-output signature first
-        [F_drive, tau_r, qp_dbg] = controller_handle(x, tk);
-        %{
-    catch
-        try
-            % fallback: 2-output signature
-            [F_drive, tau_r] = controller_handle(x, tk);
-            qp_dbg = [];
-        catch
-            % keep defaults if controller fails
-            qp_dbg = [];
-        end
-    end
-        %}
+    % --- solve controller once (support optional qp_dbg) ---
+    F_drive = 0; tau_r = 0; qp_dbg = [];
+    [F_drive, tau_r, qp_dbg] = controller_handle(x, tk);
+
     u = [F_drive; tau_r];
     U(k,:) = u.';
-    if ~isempty(qp_dbg) && isstruct(qp_dbg) && isfield(qp_dbg,'lb') && isfield(qp_dbg,'ub') ...
-        && ~isempty(qp_dbg.lb) && ~isempty(qp_dbg.ub)
-    lb = double(qp_dbg.lb(:));
-    ub = double(qp_dbg.ub(:));
-    else
-    if isfield(params,'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
-    if isfield(params,'Taumax'), Taumax = params.Taumax; else, Taumax = 1e3; end
-    lb = [-Fmax; -Taumax];
-    ub = [ Fmax;  Taumax];
-    end
-    dbg.u(k+1,:) = u.';  % keep your k+1 alignment convention
 
-    % use relative threshold (more robust than exact equality)
-    Fmax_eff   = ub(1);
-    Taumax_eff = ub(2);
-    
-    dbg.u_sat(k+1,1) = abs(u(1)) >= 0.995*Fmax_eff;
-    dbg.u_sat(k+1,2) = abs(u(2)) >= 0.995*Taumax_eff;
-    
-    % distance to nearest bound (0 means exactly on bound)
-    dbg.u_margin(k+1,:) = min((u - lb).', (ub - u).');
+    % --- bounds (prefer from qp_dbg; fallback to params) ---
+    if ~isempty(qp_dbg) && isstruct(qp_dbg) && isfield(qp_dbg,'lb') && isfield(qp_dbg,'ub') ...
+            && ~isempty(qp_dbg.lb) && ~isempty(qp_dbg.ub)
+        lb = double(qp_dbg.lb(:));
+        ub = double(qp_dbg.ub(:));
+    else
+        if isfield(params,'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
+        if isfield(params,'Taumax'), Taumax = params.Taumax; else, Taumax = 1e3; end
+        lb = [-Fmax; -Taumax];
+        ub = [ Fmax;  Taumax];
+    end
+
+    % keep your k+1 alignment convention
+    dbg.u(k+1,:) = u.';
+
+    % sat + margin (robust)
+    range = ub - lb;
+    tol   = 0.005; % 0.5% of range treated as "near bound"
+    dbg.u_sat(k+1,1) = (u(1) - lb(1) <= tol*range(1)) || (ub(1) - u(1) <= tol*range(1));
+    dbg.u_sat(k+1,2) = (u(2) - lb(2) <= tol*range(2)) || (ub(2) - u(2) <= tol*range(2));
+
+    margin = min(u - lb, ub - u);      % 2x1
+    dbg.u_margin(k+1,:) = margin(:).'; % 1x2
+
     % --- extract qp rv/ra (numeric only; NaN if unavailable) ---
     [qp_rv_k, qp_ra_k, qp_exitflag_k, qp_condK_k] = extract_qp_residuals(x, u, params, qp_dbg);
     dbg.qp_rv(k+1)       = qp_rv_k;
     dbg.qp_ra(k+1)       = qp_ra_k;
     dbg.qp_exitflag(k+1) = qp_exitflag_k;
     dbg.qp_condK(k+1)    = qp_condK_k;
-    
+
+    % --- pull vector monitors from qp_dbg if available ---
     if ~isempty(qp_dbg) && isstruct(qp_dbg)
-    if isfield(qp_dbg,'h') && ~isempty(qp_dbg.h)
-        try, dbg.qp_h(k+1,:) = double(full(qp_dbg.h(:))).'; end
-    end
-    if isfield(qp_dbg,'hdot') && ~isempty(qp_dbg.hdot)
-        try, dbg.qp_hdot(k+1,:) = double(full(qp_dbg.hdot(:))).'; end
+        if isfield(qp_dbg,'h') && ~isempty(qp_dbg.h)
+            try, dbg.qp_h(k+1,:) = double(full(qp_dbg.h(:))).'; end %#ok<TRYNC>
+        end
+        if isfield(qp_dbg,'hdot') && ~isempty(qp_dbg.hdot)
+            try, dbg.qp_hdot(k+1,:) = double(full(qp_dbg.hdot(:))).'; end %#ok<TRYNC>
+        end
+        if isfield(qp_dbg,'e_yddot') && ~isempty(qp_dbg.e_yddot)
+            try, dbg.qp_e_yddot(k+1,:) = double(full(qp_dbg.e_yddot(:))).'; end %#ok<TRYNC>
+        end
+        if isfield(qp_dbg,'yddot_opt') && ~isempty(qp_dbg.yddot_opt)
+            try, dbg.qp_yddot(k+1,:) = double(full(qp_dbg.yddot_opt(:))).'; end %#ok<TRYNC>
+        end
+        if isfield(qp_dbg,'A_y') && ~isempty(qp_dbg.A_y)
+            try, dbg.qp_Ay(k+1,:,:) = double(full(qp_dbg.A_y)); end %#ok<TRYNC>
+        end
     end
 
-    % prefer accel error if you stored it as qp_dbg.e_yddot in controller
-    if isfield(qp_dbg,'e_yddot') && ~isempty(qp_dbg.e_yddot)
-        try, dbg.qp_e_yddot(k+1,:) = double(full(qp_dbg.e_yddot(:))).'; end
+    % --- fixed-step semi-implicit euler inside [tk, tk1] ---
+    Ns = 5;                         % substeps per control interval
+    h  = (tk1 - tk) / Ns;
+
+    for s = 1:Ns %#ok<NASGU>
+        dp = towing_dynamic(x, params, 'proj');
+        a  = dp.a(u);
+
+        % update v first (semi-implicit)
+        vnew = dp.v + h * a;
+        x(4:6)   = vnew(1:3);
+        x(10:12) = vnew(4:6);
+
+        % update q using new v
+        x(1:3) = x(1:3) + h * x(4:6);
+        x(7:9) = x(7:9) + h * x(10:12);
+
+        % project (dae-style stabilization)
+        x = project_position_to_constraints(x, params);
+        x = project_velocity_to_constraints(x, params);
     end
 
-    % optional: store actual yddot
-    if isfield(qp_dbg,'yddot_opt') && ~isempty(qp_dbg.yddot_opt)
-        try, dbg.qp_yddot(k+1,:) = double(full(qp_dbg.yddot_opt(:))).'; end
-    end
-    end
-    if ~isempty(qp_dbg) && isstruct(qp_dbg)
-    if isfield(qp_dbg,'A_y') && ~isempty(qp_dbg.A_y)
-        dbg.qp_Ay(k+1,:,:) = double(full(qp_dbg.A_y));
-    end
-    end
-    % --- integrate dynamics with u held constant ---
-    dyn_full = towing_dynamic(x, params, 'full');
-    f = @(tt,xx) dyn_full.xdot(u);
-    [~, xseg] = ode45(f, [tk tk1], x, opts);
-    x = xseg(end,:).';
-    
-    % --- project position/orientation to satisfy g(q)=0 (rigid hitch) ---
-    x = project_position_to_constraints(x, params);
-
-    % --- project velocity to satisfy Jv=0 ---
-    x = project_velocity_to_constraints(x, params);
-    % hard fail if NaN (do not hide bugs)
+    % hard fail if NaN/Inf (do not hide bugs)
     if any(~isfinite(x))
-    error('NaN/Inf after projection at step k=%d, t=%.6f', k, tk1);
+        error('NaN/Inf after projection at step k=%d, t=%.6f', k, tk1);
     end
+
     X(k+1,:) = x.';
 
     % --- log rv from current state ---
     dm = towing_dynamic(x, params, 'mats');
     dbg.rv(k+1) = double(norm(full(dm.J * dm.v)));
 
-    %=== testing, remove at will
-    d  = params.d;
-    xr = x(1);
-    yr = x(2);
-    th = x(3);
+    % --- optional early-step consistency print ---
+    if k <= 5
+        dm = towing_dynamic(x, params, 'mats');
 
-    p_hr = [ xr - d*cos(th);
-             yr - d*sin(th) ];
-    Lt = params.Lt;
-    xt = x(7);
-    yt = x(8);
-    th = x(9);
-    %{
-    p_ht = [ xt + (Lt/2)*cos(th);
-             yt + (Lt/2)*sin(th) ];
-    e_h  = norm(p_hr - p_ht);
-    save('log.mat','e_h')
-    %}
+        d  = params.d;  Lt = params.Lt;
+        xr = x(1); yr = x(2); thr = x(3);
+        xt = x(7); yt = x(8); tht = x(9);
+
+        p_hr = [xr - d*cos(thr);  yr - d*sin(thr)];
+        p_ht = [xt + (Lt/2)*cos(tht); yt + (Lt/2)*sin(tht)];
+        g_manual = p_hr - p_ht;
+
+        fprintf('[g_h check] ||dm.g_h - g_manual|| = %.3e\n', ...
+            norm(full(dm.g_h) - g_manual));
+    end
 end
 end
+
 
 function x = project_velocity_to_constraints(x, params)
 % project generalized velocity v so that J*v = 0 (minimum correction in M-metric)
@@ -287,7 +287,8 @@ v = dyn.v;
 MinvJt = M \ (J.');          % 6x3
 K = J * MinvJt;              % 3x3
 
-v_corr = v - MinvJt * (K \ (J * v));
+Kv = pinv(K) * (J*v);
+v_corr = v - MinvJt * Kv;
 
 x(4:6)   = v_corr(1:3);
 x(10:12) = v_corr(4:6);
@@ -308,7 +309,7 @@ xr  = x(1);  yr  = x(2);  thetar = x(3);
 % robot hitch position in world
 p_hr = [xr - d*cos(thetar);
         yr - d*sin(thetar)];
-
+%{
 % enforce rigid hitch orientation: thetat = thetar
 x(9) = thetar;
 
@@ -319,7 +320,11 @@ yt = p_hr(2) - (Lt/2)*sin(thetar);
 
 x(7) = xt;
 x(8) = yt;
-
+%}
+thetat = x(9);
+xt = p_hr(1) - (Lt/2)*cos(thetat);
+yt = p_hr(2) - (Lt/2)*sin(thetat);
+x(7)=xt; x(8)=yt;
 % fail fast on bad numbers
 if any(~isfinite(x([1:3,7:9])))
     error('non-finite state in position projection');

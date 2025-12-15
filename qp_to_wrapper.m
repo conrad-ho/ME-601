@@ -16,9 +16,9 @@ function [F_drive, tau_r, qp_dbg] = qp_to_wrapper(x, t, params)
     t_ref     = traj.t(:);  % (N+1)x1
     t_clamped = min(max(t, t_ref(1)), t_ref(end));
 
-    yd       = interp1(t_ref, traj.y.'       , t_clamped, 'pchip').';
-    ydot_d   = interp1(t_ref, traj.ydot.'    , t_clamped, 'pchip').';
-    yddot_ff = interp1(t_ref, traj.yddot_ff.', t_clamped, 'pchip').';
+    yd       = interp1(t_ref, traj.y.'        , t_clamped, 'pchip').';
+    ydot_d   = interp1(t_ref, traj.ydot.'     , t_clamped, 'linear','extrap').';
+    yddot_ff = interp1(t_ref, traj.yddot_ff.' , t_clamped, 'linear','extrap').';
 
     % ---------- call projected task-space QP controller ----------
     [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj( ...

@@ -36,17 +36,7 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
     yddot_des = yddot_ff ...
                 - Kd * (ydot - ydot_d) ...
                 - Kp * (y - yd);
-    persistent pr;
-if isempty(pr), pr = 0; end
-if pr < 5
-    fprintf('[qp] t=%.3f ||h||=%.2e ||hdot||=%.2e ||yddot_des||=%.2e\n', ...
-        t, norm(full(y-yd)), norm(full(ydot-ydot_d)), norm(full(yddot_des)));
-    pr = pr + 1;
-end
-if pr <= 5
-    yddot_max = abs(full(A_y))*[params.Fmax;params.Taumax] + abs(full(b_y));
-    fprintf('[qp] approx yddot_max per-axis = [%.2e, %.2e]\n', yddot_max(1), yddot_max(2));
-end
+
     % =========================================================
     % task-space affine model:
     %   yddot(u) = A_y*u + b_y
