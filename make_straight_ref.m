@@ -23,7 +23,7 @@ function ref_to = make_straight_ref(tspan, y0, opts)
     if nargin < 3, opts = struct(); end
     if nargin < 2 || isempty(y0), y0 = [0;0]; end
 
-    if ~isfield(opts,'R'),      opts.R      = 2.0;     end
+    if ~isfield(opts,'R'),      opts.R      = 5.0;     end
     if ~isfield(opts,'w'),      opts.w      = 0.3;     end
     if ~isfield(opts,'angle'),  opts.angle  = pi/2;    end
     if ~isfield(opts,'theta0'), opts.theta0 = 0.0;     end
