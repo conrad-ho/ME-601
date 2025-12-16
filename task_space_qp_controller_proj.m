@@ -40,6 +40,23 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
     Hqp = A_y.' * Wy * A_y + Wu;               % 2x2
     fqp = A_y.' * Wy * (b_y - yddot_des);      % 2x1
     % =========================================================
+    % soft non-holonomic penalty (trailer lateral vel)
+    % penalize vdot_nh(u) = A_nh*u + b_nh  -> 0
+    % =========================================================
+    if ~isfield(params,'w_nh'), params.w_nh = 0; end
+    w_nh = params.w_nh;
+    
+    if w_nh > 0
+        A_nh = dyn.A_nh;   % 1x2
+        b_nh = dyn.b_nh;   % 1x1
+    
+        % add: 0.5*w_nh*(A_nh*u + b_nh)^2
+        Hqp = Hqp + (A_nh.' * w_nh * A_nh);
+        fqp = fqp + (A_nh.' * w_nh * b_nh);
+    end
+
+
+    % =========================================================
     % bounds on u
     % =========================================================
     if isfield(params,'Fmax'),   Fmax   = params.Fmax;   else, Fmax   = 1e3; end
@@ -115,6 +132,13 @@ function [F_drive, tau_r, qp_dbg] = task_space_qp_controller_proj(x, t, params, 
         qp_dbg.u_opt = u_opt;
         qp_dbg.lb = lb;
         qp_dbg.ub = ub;
+        qp_dbg.w_nh = w_nh;
+    if w_nh > 0
+        qp_dbg.A_nh = A_nh;
+        qp_dbg.b_nh = b_nh;
+        qp_dbg.v_nh = dyn.v_nh;                 % current lateral residual
+        qp_dbg.vdot_nh_opt = dyn.A_nh*u_opt + dyn.b_nh;
+    end
         %{
         % keep your old fields for compatibility
         lambda_opt = zeros(3,1);

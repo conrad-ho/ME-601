@@ -272,6 +272,10 @@ for k = 1:numel(T)-1
     e_h  = norm(p_hr - p_ht);
     save('log.mat','e_h')
     %}
+    if mod(k,50)==0
+    fprintf('t=%.2f  v_nh=%.3e  vdot_nh=%.3e  rv=%.3e  ra=%.3e\n', ...
+        t, qp_dbg.v_nh, qp_dbg.vdot_nh_opt, qp_dbg.res_vel, qp_dbg.res_acc);
+    end
 end
 end
 
